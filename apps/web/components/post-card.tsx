@@ -1,0 +1,74 @@
+import type { Post } from "@repo/shared";
+import { VoteButton } from "./vote-button";
+import Link from "next/link";
+
+export function PostCard({ post }: { post: Post }) {
+  const timeAgo = getTimeAgo(new Date(post.created_at));
+
+  return (
+    <article className="border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
+      <div className="flex items-start gap-3">
+        {post.source === "x" && post.x_author_avatar && (
+          <img
+            src={post.x_author_avatar}
+            alt=""
+            className="w-10 h-10 rounded-full"
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 text-sm">
+            {post.source === "x" ? (
+              <>
+                <span className="font-semibold">{post.x_author_name}</span>
+                <span className="text-gray-500">@{post.x_author_handle}</span>
+              </>
+            ) : (
+              <span className="font-semibold">Community Post</span>
+            )}
+            <span className="text-gray-600">·</span>
+            <span className="text-gray-500">{timeAgo}</span>
+            <span className="ml-auto px-2 py-0.5 text-xs rounded-full bg-gray-800 text-gray-400">
+              {post.category}
+            </span>
+          </div>
+          <p className="mt-2 text-gray-200 whitespace-pre-wrap">{post.content}</p>
+          {post.media_urls.length > 0 && (
+            <div className="mt-3 grid gap-2 grid-cols-2">
+              {post.media_urls.slice(0, 4).map((url, i) => (
+                <img
+                  key={i}
+                  src={url}
+                  alt=""
+                  className="rounded-lg w-full object-cover max-h-64"
+                />
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-6 mt-3">
+            <VoteButton targetType="post" targetId={post.id} initialCount={post.upvote_count} />
+            <Link
+              href={`/post/${post.id}`}
+              className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              {post.comment_count}
+            </Link>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function getTimeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}

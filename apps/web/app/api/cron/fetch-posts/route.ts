@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { getUserIdByUsername, getUserRecentTweets } from "@/lib/x-api";
+import { fetchRecentTweetsForHandle } from "@/lib/scraper";
 
 // Use service role key for server-side operations
 function getAdminClient() {
@@ -30,55 +30,43 @@ export async function GET(request: Request) {
   }
 
   let totalInserted = 0;
+  const errors: string[] = [];
 
   for (const source of sources) {
-    // Get X user ID
-    const userId = await getUserIdByUsername(source.x_handle);
-    if (!userId) continue;
+    try {
+      const tweets = await fetchRecentTweetsForHandle(source.x_handle, 5);
 
-    // Get recent tweets
-    const timeline = await getUserRecentTweets(userId, 5);
-    if (!timeline.data) continue;
+      for (const tweet of tweets) {
+        const { error } = await supabase.from("posts").upsert(
+          {
+            source: "x",
+            x_tweet_id: tweet.tweetId,
+            x_author_handle: tweet.authorHandle,
+            x_author_name: tweet.authorName,
+            x_author_avatar: tweet.authorAvatar,
+            content: tweet.content,
+            media_urls: tweet.mediaUrls,
+            category: source.category,
+            created_at: tweet.createdAt,
+          },
+          { onConflict: "x_tweet_id" }
+        );
 
-    const userMap = new Map(
-      timeline.includes?.users?.map((u) => [u.id, u]) ?? []
-    );
-    const mediaMap = new Map(
-      timeline.includes?.media?.map((m) => [m.media_key, m]) ?? []
-    );
-
-    for (const tweet of timeline.data) {
-      const author = userMap.get(tweet.author_id);
-      const mediaKeys = tweet.attachments?.media_keys ?? [];
-      const mediaUrls = mediaKeys
-        .map((key) => {
-          const m = mediaMap.get(key);
-          return m?.url ?? m?.preview_image_url ?? null;
-        })
-        .filter(Boolean) as string[];
-
-      // Upsert to avoid duplicates
-      const { error } = await supabase.from("posts").upsert(
-        {
-          source: "x",
-          x_tweet_id: tweet.id,
-          x_author_handle: author?.username ?? source.x_handle,
-          x_author_name: author?.name ?? source.display_name,
-          x_author_avatar: author?.profile_image_url ?? null,
-          content: tweet.text,
-          media_urls: mediaUrls,
-          category: source.category,
-          created_at: tweet.created_at,
-        },
-        { onConflict: "x_tweet_id" }
-      );
-
-      if (!error) totalInserted++;
+        if (!error) totalInserted++;
+      }
+    } catch (err) {
+      const msg = `Failed to fetch @${source.x_handle}: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(msg);
+      errors.push(msg);
     }
+
+    // Be nice: 2 second delay between sources
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
   return NextResponse.json({
-    message: `Fetched posts from ${sources.length} sources`,
+    message: `Processed ${sources.length} sources`,
     inserted: totalInserted,
+    errors: errors.length > 0 ? errors : undefined,
   });
 }

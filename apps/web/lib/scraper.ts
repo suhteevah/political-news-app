@@ -2,15 +2,12 @@
  * Multi-strategy Twitter/X scraper — replaces the official X API v2.
  *
  * Strategy chain:
- *   1. SearXNG (public instance) — discovers tweet URLs via web search
- *   2. FxTwitter API (api.fxtwitter.com) — enriches tweet data by ID (free, no auth)
- *   3. Nitter RSS (xcancel.com) — fallback for tweet discovery
- *   4. Degraded mode — uses whatever text we got from SearXNG/Nitter directly
+ *   1. Twitter Syndication API — discovers tweets via public embed endpoint
+ *   2. FxTwitter API (api.fxtwitter.com) — enrichment fallback (free, no auth)
+ *   3. SearXNG (optional) — additional discovery via web search
  *
  * Requirements:
- *   - SEARXNG_URL env var (public instance URL, e.g. https://search.example.com)
- *     Optional — if not set, skips SearXNG and goes straight to Nitter RSS.
- *   - NITTER_INSTANCE_URL env var (default: https://xcancel.com)
+ *   - SEARXNG_URL env var (optional — public instance URL)
  *
  * No npm dependencies — uses native fetch, AbortController, and regex.
  */
@@ -18,6 +15,48 @@
 // ============================================================
 // Types
 // ============================================================
+
+/** Twitter Syndication timeline entry */
+interface SyndicationEntry {
+  type: string;
+  entry_id: string;
+  sort_index: string;
+  content?: {
+    tweet?: SyndicationTweet;
+  };
+}
+
+interface SyndicationTweet {
+  id_str: string;
+  full_text?: string;
+  text?: string;
+  created_at: string;
+  user?: {
+    id_str: string;
+    name: string;
+    screen_name: string;
+    profile_image_url_https: string;
+  };
+  entities?: {
+    media?: SyndicationMedia[];
+  };
+  extended_entities?: {
+    media?: SyndicationMedia[];
+  };
+}
+
+interface SyndicationMedia {
+  type: string;
+  media_url_https?: string;
+  url?: string;
+  video_info?: {
+    variants?: Array<{
+      url: string;
+      content_type: string;
+      bitrate?: number;
+    }>;
+  };
+}
 
 /** FxTwitter status response */
 interface FxTweetResponse {
@@ -74,25 +113,6 @@ interface FxVideo {
   duration: number;
 }
 
-/** FxTwitter user response */
-interface FxUserResponse {
-  code: number;
-  message: string;
-  user?: FxUser;
-}
-
-interface FxUser {
-  id: string;
-  name: string;
-  screen_name: string;
-  avatar_url: string;
-  banner_url?: string;
-  description: string;
-  followers: number;
-  following: number;
-  tweets: number;
-}
-
 /** SearXNG JSON response */
 interface SearXNGResponse {
   query: string;
@@ -123,8 +143,9 @@ export interface ScrapedTweet {
 // ============================================================
 
 const FXTWITTER_BASE = "https://api.fxtwitter.com";
+const SYNDICATION_BASE =
+  "https://syndication.twitter.com/srv/timeline-profile/screen-name";
 const SEARXNG_URL = process.env.SEARXNG_URL ?? "";
-const NITTER_URL = process.env.NITTER_INSTANCE_URL ?? "https://xcancel.com";
 
 const BOT_UA = "TheRightWire/1.0 (news-aggregator)";
 const BROWSER_UA =
@@ -155,31 +176,11 @@ async function fetchWithTimeout(
 const TWEET_URL_RE =
   /(?:https?:\/\/)?(?:(?:www|mobile)\.)?(?:twitter\.com|x\.com)\/([a-zA-Z0-9_]+)\/status\/(\d+)/;
 
-function extractTweetFromUrl(url: string): { handle: string; tweetId: string } | null {
+function extractTweetFromUrl(
+  url: string
+): { handle: string; tweetId: string } | null {
   const m = url.match(TWEET_URL_RE);
   return m ? { handle: m[1], tweetId: m[2] } : null;
-}
-
-/** Extract tweet ID from a Nitter / xcancel URL */
-const NITTER_URL_RE =
-  /\/([a-zA-Z0-9_]+)\/status\/(\d+)/;
-
-function extractTweetFromNitterUrl(url: string): { handle: string; tweetId: string } | null {
-  const m = url.match(NITTER_URL_RE);
-  return m ? { handle: m[1], tweetId: m[2] } : null;
-}
-
-/** Strip HTML tags and decode common entities */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /**
@@ -193,7 +194,176 @@ export function toVideoEmbedUrl(tweetUrl: string): string {
 }
 
 // ============================================================
-// Layer 1: SearXNG — Tweet Discovery
+// Layer 1: Twitter Syndication API — Primary Discovery
+// ============================================================
+
+async function fetchViaSyndication(
+  handle: string,
+  maxResults: number
+): Promise<ScrapedTweet[]> {
+  try {
+    const res = await fetchWithTimeout(
+      `${SYNDICATION_BASE}/${handle}`,
+      {
+        headers: {
+          "User-Agent": BROWSER_UA,
+          Accept: "text/html",
+        },
+      },
+      15_000
+    );
+
+    if (!res.ok) {
+      console.warn(
+        `Syndication returned ${res.status} for @${handle}`
+      );
+      return [];
+    }
+
+    const html = await res.text();
+
+    // Extract __NEXT_DATA__ JSON from the SSR HTML
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/
+    );
+    if (!match) {
+      console.warn(`No __NEXT_DATA__ found in syndication response for @${handle}`);
+      return [];
+    }
+
+    const data = JSON.parse(match[1]);
+    const entries: SyndicationEntry[] =
+      data.props?.pageProps?.timeline?.entries ?? [];
+
+    if (entries.length === 0) {
+      console.warn(`Syndication returned 0 entries for @${handle}`);
+      return [];
+    }
+
+    console.log(
+      `Syndication found ${entries.length} entries for @${handle}`
+    );
+
+    const results: ScrapedTweet[] = [];
+
+    // Filter to tweet entries only (skip tombstones, ads, etc.)
+    // Sort by sort_index descending (most recent first)
+    const tweetEntries = entries
+      .filter(
+        (e) =>
+          e.type === "tweet" &&
+          e.content?.tweet?.user?.screen_name?.toLowerCase() ===
+            handle.toLowerCase()
+      )
+      .sort((a, b) => {
+        const aIdx = BigInt(a.sort_index || "0");
+        const bIdx = BigInt(b.sort_index || "0");
+        return bIdx > aIdx ? 1 : bIdx < aIdx ? -1 : 0;
+      });
+
+    for (const entry of tweetEntries.slice(0, maxResults)) {
+      const tweet = entry.content?.tweet;
+      if (!tweet) continue;
+
+      const text = tweet.full_text || tweet.text || "";
+      if (!text) continue;
+
+      // Collect media URLs
+      const mediaUrls: string[] = [];
+      const allMedia = [
+        ...(tweet.extended_entities?.media ?? []),
+        ...(tweet.entities?.media ?? []),
+      ];
+      const seenMediaUrls = new Set<string>();
+
+      for (const m of allMedia) {
+        const url = m.media_url_https || m.url || "";
+        if (url && !seenMediaUrls.has(url)) {
+          seenMediaUrls.add(url);
+          mediaUrls.push(url);
+        }
+      }
+
+      results.push({
+        tweetId: tweet.id_str || entry.entry_id.replace("tweet-", ""),
+        authorHandle: tweet.user?.screen_name ?? handle,
+        authorName: tweet.user?.name ?? handle,
+        authorAvatar: tweet.user?.profile_image_url_https
+          ? tweet.user.profile_image_url_https.replace("_normal", "_400x400")
+          : null,
+        content: text.replace(/https:\/\/t\.co\/\w+$/g, "").trim(),
+        mediaUrls,
+        createdAt: tweet.created_at
+          ? new Date(tweet.created_at).toISOString()
+          : new Date().toISOString(),
+      });
+    }
+
+    return results;
+  } catch (err) {
+    console.warn(
+      `Syndication failed for @${handle}:`,
+      err instanceof Error ? err.message : err
+    );
+    return [];
+  }
+}
+
+// ============================================================
+// Layer 2: FxTwitter — Enrichment / Fallback
+// ============================================================
+
+async function fetchTweetViaFxTwitter(
+  handle: string,
+  tweetId: string
+): Promise<ScrapedTweet | null> {
+  try {
+    const res = await fetchWithTimeout(
+      `${FXTWITTER_BASE}/${handle}/status/${tweetId}`,
+      { headers: { "User-Agent": BOT_UA } },
+      8_000
+    );
+
+    if (!res.ok) return null;
+
+    const data: FxTweetResponse = await res.json();
+    if (data.code !== 200 || !data.tweet) return null;
+
+    const t = data.tweet;
+    const mediaUrls: string[] = [];
+
+    if (t.media?.photos) {
+      for (const p of t.media.photos) {
+        mediaUrls.push(p.url);
+      }
+    }
+
+    if (t.media?.videos) {
+      for (const v of t.media.videos) {
+        if (v.thumbnail_url) mediaUrls.push(v.thumbnail_url);
+      }
+    }
+
+    return {
+      tweetId: t.id,
+      authorHandle: t.author.screen_name,
+      authorName: t.author.name,
+      authorAvatar: t.author.avatar_url ?? null,
+      content: t.text,
+      mediaUrls,
+      createdAt: new Date(t.created_timestamp * 1000).toISOString(),
+    };
+  } catch (err) {
+    console.warn(
+      `FxTwitter failed for ${handle}/${tweetId}:`,
+      err instanceof Error ? err.message : err
+    );
+    return null;
+  }
+}
+
+// ============================================================
+// Layer 3: SearXNG — Additional Discovery (Optional)
 // ============================================================
 
 async function searchSearXNG(handle: string): Promise<SearXNGResult[]> {
@@ -222,150 +392,12 @@ async function searchSearXNG(handle: string): Promise<SearXNGResult[]> {
     const data: SearXNGResponse = await res.json();
     return data.results ?? [];
   } catch (err) {
-    console.warn(`SearXNG failed for @${handle}:`, err instanceof Error ? err.message : err);
+    console.warn(
+      `SearXNG failed for @${handle}:`,
+      err instanceof Error ? err.message : err
+    );
     return [];
   }
-}
-
-// ============================================================
-// Layer 2: FxTwitter — Tweet Enrichment
-// ============================================================
-
-async function fetchTweetViaFxTwitter(
-  handle: string,
-  tweetId: string
-): Promise<ScrapedTweet | null> {
-  try {
-    const res = await fetchWithTimeout(
-      `${FXTWITTER_BASE}/${handle}/status/${tweetId}`,
-      { headers: { "User-Agent": BOT_UA } },
-      8_000
-    );
-
-    if (!res.ok) return null;
-
-    const data: FxTweetResponse = await res.json();
-    if (data.code !== 200 || !data.tweet) return null;
-
-    const t = data.tweet;
-    const mediaUrls: string[] = [];
-
-    // Collect photo URLs
-    if (t.media?.photos) {
-      for (const p of t.media.photos) {
-        mediaUrls.push(p.url);
-      }
-    }
-
-    // Collect video thumbnails (actual video available via vxtwitter embed)
-    if (t.media?.videos) {
-      for (const v of t.media.videos) {
-        if (v.thumbnail_url) mediaUrls.push(v.thumbnail_url);
-      }
-    }
-
-    return {
-      tweetId: t.id,
-      authorHandle: t.author.screen_name,
-      authorName: t.author.name,
-      authorAvatar: t.author.avatar_url ?? null,
-      content: t.text,
-      mediaUrls,
-      createdAt: new Date(t.created_timestamp * 1000).toISOString(),
-    };
-  } catch (err) {
-    console.warn(`FxTwitter failed for ${handle}/${tweetId}:`, err instanceof Error ? err.message : err);
-    return null;
-  }
-}
-
-/** Fetch user profile (for avatar fallback) */
-async function fetchUserProfile(handle: string): Promise<FxUser | null> {
-  try {
-    const res = await fetchWithTimeout(
-      `${FXTWITTER_BASE}/${handle}`,
-      { headers: { "User-Agent": BOT_UA } },
-      8_000
-    );
-    if (!res.ok) return null;
-    const data: FxUserResponse = await res.json();
-    return data.code === 200 ? (data.user ?? null) : null;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
-// Layer 3: Nitter RSS — Fallback Discovery
-// ============================================================
-
-interface NitterRSSItem {
-  tweetId: string;
-  handle: string;
-  content: string;
-  pubDate: string;
-}
-
-async function fetchNitterRSS(handle: string): Promise<NitterRSSItem[]> {
-  const urls = [
-    `${NITTER_URL}/${handle}/rss`,
-    // Fallback to a second instance if primary fails
-    `https://nitter.poast.org/${handle}/rss`,
-  ];
-
-  for (const url of urls) {
-    try {
-      const res = await fetchWithTimeout(
-        url,
-        {
-          headers: {
-            "User-Agent": BROWSER_UA,
-            Accept: "application/rss+xml, application/xml, text/xml",
-          },
-        },
-        8_000
-      );
-
-      if (!res.ok) continue;
-
-      const xml = await res.text();
-      if (!xml.includes("<item>")) continue;
-
-      const items: NitterRSSItem[] = [];
-      const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-
-      for (const itemXml of itemMatches) {
-        const link =
-          itemXml.match(/<link>(.*?)<\/link>/)?.[1] ??
-          itemXml.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1];
-
-        const description =
-          itemXml.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] ??
-          itemXml.match(/<description>([\s\S]*?)<\/description>/)?.[1] ??
-          "";
-
-        const pubDate = itemXml.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] ?? "";
-
-        if (!link) continue;
-
-        const parsed = extractTweetFromNitterUrl(link);
-        if (!parsed) continue;
-
-        items.push({
-          tweetId: parsed.tweetId,
-          handle: parsed.handle,
-          content: stripHtml(description),
-          pubDate,
-        });
-      }
-
-      if (items.length > 0) return items;
-    } catch (err) {
-      console.warn(`Nitter RSS failed at ${url}:`, err instanceof Error ? err.message : err);
-    }
-  }
-
-  return [];
 }
 
 // ============================================================
@@ -376,13 +408,22 @@ export async function fetchRecentTweetsForHandle(
   handle: string,
   maxResults = 5
 ): Promise<ScrapedTweet[]> {
-  const results: ScrapedTweet[] = [];
   const seenIds = new Set<string>();
 
-  // --- Layer 1: SearXNG discovery ---
-  const searxResults = await searchSearXNG(handle);
+  // --- Layer 1: Twitter Syndication API (primary) ---
+  const syndicationResults = await fetchViaSyndication(handle, maxResults);
 
+  if (syndicationResults.length > 0) {
+    console.log(
+      `Got ${syndicationResults.length} tweets for @${handle} via Syndication`
+    );
+    return syndicationResults;
+  }
+
+  // --- Layer 2: SearXNG discovery + FxTwitter enrichment ---
+  const searxResults = await searchSearXNG(handle);
   const discoveredTweets: Array<{ handle: string; tweetId: string }> = [];
+
   for (const result of searxResults) {
     const parsed = extractTweetFromUrl(result.url);
     if (parsed && !seenIds.has(parsed.tweetId)) {
@@ -392,54 +433,26 @@ export async function fetchRecentTweetsForHandle(
     if (discoveredTweets.length >= maxResults) break;
   }
 
-  // --- Layer 2: FxTwitter enrichment for SearXNG discoveries ---
   if (discoveredTweets.length > 0) {
+    const results: ScrapedTweet[] = [];
     for (const tweet of discoveredTweets.slice(0, maxResults)) {
-      const enriched = await fetchTweetViaFxTwitter(tweet.handle, tweet.tweetId);
+      const enriched = await fetchTweetViaFxTwitter(
+        tweet.handle,
+        tweet.tweetId
+      );
       if (enriched) {
         results.push(enriched);
       }
-      await delay(500); // Be nice to FxTwitter
+      await delay(500);
     }
-    if (results.length > 0) return results;
-  }
-
-  // --- Layer 3: Nitter RSS fallback ---
-  console.log(`SearXNG yielded no enrichable results for @${handle}, trying Nitter RSS...`);
-  const rssItems = await fetchNitterRSS(handle);
-
-  if (rssItems.length === 0) {
-    console.warn(`All discovery strategies failed for @${handle}`);
-    return [];
-  }
-
-  // Get user profile once for avatar
-  const profile = await fetchUserProfile(handle);
-
-  for (const item of rssItems.slice(0, maxResults)) {
-    if (seenIds.has(item.tweetId)) continue;
-    seenIds.add(item.tweetId);
-
-    // Try FxTwitter enrichment
-    const enriched = await fetchTweetViaFxTwitter(handle, item.tweetId);
-    if (enriched) {
-      results.push(enriched);
-    } else {
-      // Degraded mode: use RSS content + profile avatar
-      results.push({
-        tweetId: item.tweetId,
-        authorHandle: handle,
-        authorName: profile?.name ?? handle,
-        authorAvatar: profile?.avatar_url ?? null,
-        content: item.content,
-        mediaUrls: [], // RSS does not provide media URLs
-        createdAt: item.pubDate
-          ? new Date(item.pubDate).toISOString()
-          : new Date().toISOString(),
-      });
+    if (results.length > 0) {
+      console.log(
+        `Got ${results.length} tweets for @${handle} via SearXNG + FxTwitter`
+      );
+      return results;
     }
-    await delay(500);
   }
 
-  return results;
+  console.warn(`All strategies failed for @${handle}`);
+  return [];
 }

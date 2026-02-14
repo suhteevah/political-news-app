@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { fetchRecentTweetsForHandle } from "@/lib/scraper";
+import { fetchAllFeeds } from "@/lib/rss-scraper";
 
 // Use service role key for server-side operations
 function getAdminClient() {
@@ -18,54 +19,85 @@ export async function GET(request: Request) {
   }
 
   const supabase = getAdminClient();
+  let totalInserted = 0;
+  const errors: string[] = [];
 
-  // Get all active curated sources
+  // ── Phase 1: Scrape X/Twitter curated sources ──────────────
+
   const { data: sources } = await supabase
     .from("curated_sources")
     .select("*")
     .eq("is_active", true);
 
-  if (!sources || sources.length === 0) {
-    return NextResponse.json({ message: "No active sources" });
+  if (sources && sources.length > 0) {
+    for (const source of sources) {
+      try {
+        const tweets = await fetchRecentTweetsForHandle(source.x_handle, 10);
+
+        for (const tweet of tweets) {
+          const { error } = await supabase.from("posts").upsert(
+            {
+              source: "x",
+              x_tweet_id: tweet.tweetId,
+              x_author_handle: tweet.authorHandle,
+              x_author_name: tweet.authorName,
+              x_author_avatar: tweet.authorAvatar,
+              content: tweet.content,
+              media_urls: tweet.mediaUrls,
+              category: source.category,
+              created_at: tweet.createdAt,
+            },
+            { onConflict: "x_tweet_id" }
+          );
+
+          if (!error) totalInserted++;
+        }
+      } catch (err) {
+        const msg = `Failed to fetch @${source.x_handle}: ${err instanceof Error ? err.message : String(err)}`;
+        console.error(msg);
+        errors.push(msg);
+      }
+
+      // Be nice: 2 second delay between sources
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
   }
 
-  let totalInserted = 0;
-  const errors: string[] = [];
+  // ── Phase 2: Scrape RSS / YouTube feeds ────────────────────
 
-  for (const source of sources) {
-    try {
-      const tweets = await fetchRecentTweetsForHandle(source.x_handle, 5);
+  try {
+    const feedItems = await fetchAllFeeds(20);
 
-      for (const tweet of tweets) {
-        const { error } = await supabase.from("posts").upsert(
-          {
-            source: "x",
-            x_tweet_id: tweet.tweetId,
-            x_author_handle: tweet.authorHandle,
-            x_author_name: tweet.authorName,
-            x_author_avatar: tweet.authorAvatar,
-            content: tweet.content,
-            media_urls: tweet.mediaUrls,
-            category: source.category,
-            created_at: tweet.createdAt,
-          },
-          { onConflict: "x_tweet_id" }
-        );
+    for (const item of feedItems) {
+      const { error } = await supabase.from("posts").upsert(
+        {
+          source: item.source,
+          source_id: item.sourceId,
+          x_author_handle: item.authorHandle,
+          x_author_name: item.authorName,
+          x_author_avatar: item.authorAvatar,
+          content: item.content,
+          external_url: item.externalUrl,
+          media_urls: item.mediaUrls,
+          category: item.category,
+          created_at: item.createdAt,
+        },
+        { onConflict: "source_id" }
+      );
 
-        if (!error) totalInserted++;
+      if (!error) totalInserted++;
+      else {
+        console.warn(`RSS upsert error for ${item.sourceId}: ${error.message}`);
       }
-    } catch (err) {
-      const msg = `Failed to fetch @${source.x_handle}: ${err instanceof Error ? err.message : String(err)}`;
-      console.error(msg);
-      errors.push(msg);
     }
-
-    // Be nice: 2 second delay between sources
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+  } catch (err) {
+    const msg = `Failed to fetch RSS/YouTube feeds: ${err instanceof Error ? err.message : String(err)}`;
+    console.error(msg);
+    errors.push(msg);
   }
 
   return NextResponse.json({
-    message: `Processed ${sources.length} sources`,
+    message: `Processed ${sources?.length ?? 0} X sources + RSS/YouTube feeds`,
     inserted: totalInserted,
     errors: errors.length > 0 ? errors : undefined,
   });

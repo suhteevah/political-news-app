@@ -8,10 +8,16 @@
 const https = require("https");
 const http = require("http");
 
-// --- Config ---
-const SUPABASE_URL = "https://acrkhojoxeutwmwrpkpi.supabase.co";
-const SUPABASE_KEY =
-  "REDACTED_SERVICE_ROLE_KEY";
+// --- Config (loaded from environment) ---
+require("dotenv").config({ path: require("path").resolve(__dirname, "../apps/web/.env.local") });
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in apps/web/.env.local");
+  process.exit(1);
+}
 
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";

@@ -4,7 +4,9 @@ node_modules/
 dist/
 .env
 .env.local
+.env.*.local
 .turbo/
+.vercel/
 *.tsbuildinfo
 
 # Windows reserved device names (cause git add failures)

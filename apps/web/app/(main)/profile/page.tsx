@@ -36,7 +36,7 @@ export default async function ProfilePage() {
           <p className="mt-4 text-gray-300">{profile.bio}</p>
         )}
         <div className="mt-4 flex gap-6 text-sm text-gray-400">
-          <span>Joined {new Date(profile?.created_at).toLocaleDateString()}</span>
+          <span>Joined {profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : "Unknown"}</span>
         </div>
       </div>
       <form action="/api/auth/signout" method="post" className="mt-4">

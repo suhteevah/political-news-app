@@ -4,15 +4,14 @@ import { HighlightPicker } from "@/components/highlight-picker";
 export default async function HighlightsPage() {
   const supabase = await createClient();
 
-  // Get today's top posts sorted by upvotes
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Get today's top posts sorted by upvotes (UTC-based)
+  const todayUTC = new Date().toISOString().split("T")[0] + "T00:00:00.000Z";
 
   const { data: posts } = await supabase
     .from("posts")
     .select("id, content, x_author_handle, x_author_name, category, upvote_count, created_at")
     .eq("source", "x")
-    .gte("created_at", today.toISOString())
+    .gte("created_at", todayUTC)
     .order("upvote_count", { ascending: false })
     .limit(50);
 

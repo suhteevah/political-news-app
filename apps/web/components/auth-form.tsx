@@ -4,6 +4,24 @@ import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+// Reserved usernames that cannot be registered
+const RESERVED_USERNAMES = [
+  "admin", "administrator", "mod", "moderator", "owner",
+  "superuser", "super_user", "superadmin", "super_admin",
+  "root", "system", "sysadmin", "sys_admin",
+  "staff", "support", "help", "official",
+  "therightwire", "the_right_wire", "rightwire", "right_wire",
+  "wire_admin", "wire_mod", "wire_official",
+  "null", "undefined", "anonymous", "deleted",
+];
+
+function isReservedUsername(name: string): boolean {
+  const normalized = name.toLowerCase().replace(/[\s\-_.]/g, "");
+  return RESERVED_USERNAMES.some(
+    (reserved) => normalized === reserved.replace(/[\s\-_.]/g, "") || normalized.includes("admin") || normalized.includes("moderator")
+  );
+}
+
 export function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,6 +37,13 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     setError(null);
 
     if (mode === "signup") {
+      // Block reserved/admin-like usernames
+      if (isReservedUsername(username)) {
+        setError("That username is reserved. Please choose a different one.");
+        setLoading(false);
+        return;
+      }
+
       const { error } = await supabase.auth.signUp({
         email,
         password,

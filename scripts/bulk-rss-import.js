@@ -223,7 +223,7 @@ async function upsertPosts(posts) {
     const batch = posts.slice(i, i + batchSize);
 
     const res = await httpPost(
-      `${SUPABASE_URL}/rest/v1/posts`,
+      `${SUPABASE_URL}/rest/v1/posts?on_conflict=source_id`,
       batch,
       {
         apikey: SUPABASE_KEY,

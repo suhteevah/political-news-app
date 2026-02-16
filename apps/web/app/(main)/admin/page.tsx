@@ -1,9 +1,21 @@
 import { createClient } from "@/lib/supabase/server";
 import { AddSourceForm } from "@/components/add-source-form";
 import { SourceList } from "@/components/source-list";
+import { redirect } from "next/navigation";
+
+// Hardcoded owner ID — only this user can access admin
+const OWNER_USER_ID = "2dea127a-e812-41f1-9e83-95b12710b890"; // Suhteevah
 
 export default async function AdminPage() {
   const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // Reject anyone who is not the site owner
+  if (!user || user.id !== OWNER_USER_ID) {
+    redirect("/");
+  }
 
   const { data: sources } = await supabase
     .from("curated_sources")

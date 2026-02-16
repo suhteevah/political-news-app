@@ -18,6 +18,9 @@ export async function NavBar() {
           <Link href="/forums" className="text-sm text-gray-400 hover:text-gray-100 transition-colors">
             Forums
           </Link>
+          <Link href="/pricing" className="text-sm text-gray-400 hover:text-gray-100 transition-colors">
+            Pricing
+          </Link>
           {user ? (
             <Link href="/profile" className="text-sm text-gray-400 hover:text-gray-100 transition-colors">
               Profile

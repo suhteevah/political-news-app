@@ -1,5 +1,6 @@
 import type { Post } from "@repo/shared";
 import { VoteButton } from "./vote-button";
+import { EmbedLinkButton } from "./embed-link-button";
 import Link from "next/link";
 
 export function PostCard({ post }: { post: Post }) {
@@ -55,6 +56,9 @@ export function PostCard({ post }: { post: Post }) {
               </svg>
               {post.comment_count}
             </Link>
+            {post.source === "x" && post.x_tweet_id && post.x_author_handle && (
+              <EmbedLinkButton handle={post.x_author_handle} tweetId={post.x_tweet_id} />
+            )}
           </div>
         </div>
       </div>

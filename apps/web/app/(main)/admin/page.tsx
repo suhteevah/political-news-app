@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { AddSourceForm } from "@/components/add-source-form";
 import { SourceList } from "@/components/source-list";
+import { BreakingAlertForm } from "@/components/breaking-alert-form";
 import { redirect } from "next/navigation";
 
 // Hardcoded owner ID — only this user can access admin
@@ -24,19 +25,29 @@ export default async function AdminPage() {
 
   return (
     <>
-      <h1 className="text-2xl font-bold mb-4">Manage Sources</h1>
-      <AddSourceForm />
-      <div className="mt-6">
-        <h2 className="text-lg font-semibold mb-3">
-          Current Sources ({sources?.length ?? 0})
-        </h2>
-        {sources && sources.length > 0 ? (
-          <SourceList sources={sources} />
-        ) : (
-          <p className="text-gray-500">
-            No sources configured yet. Add X handles above.
-          </p>
-        )}
+      <h1 className="text-2xl font-bold mb-4">Admin Dashboard</h1>
+
+      {/* Breaking News Alert Section */}
+      <div className="border border-red-800/30 rounded-xl p-6 mb-6 bg-red-950/10">
+        <BreakingAlertForm />
+      </div>
+
+      {/* Source Management Section */}
+      <div className="border border-gray-800 rounded-xl p-6">
+        <h2 className="text-lg font-semibold mb-3">Manage Sources</h2>
+        <AddSourceForm />
+        <div className="mt-6">
+          <h3 className="text-base font-medium mb-3">
+            Current Sources ({sources?.length ?? 0})
+          </h3>
+          {sources && sources.length > 0 ? (
+            <SourceList sources={sources} />
+          ) : (
+            <p className="text-gray-500">
+              No sources configured yet. Add X handles above.
+            </p>
+          )}
+        </div>
       </div>
     </>
   );

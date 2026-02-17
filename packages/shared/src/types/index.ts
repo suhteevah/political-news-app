@@ -9,7 +9,7 @@ export interface User {
 
 export interface Post {
   id: string;
-  source: "x" | "user";
+  source: "x" | "user" | "rss" | "youtube";
   x_tweet_id: string | null;
   x_author_handle: string | null;
   x_author_name: string | null;
@@ -20,6 +20,10 @@ export interface Post {
   created_at: string;
   upvote_count: number;
   comment_count: number;
+  external_url?: string | null;
+  source_id?: string | null;
+  is_breaking?: boolean;
+  breaking_sent_at?: string | null;
 }
 
 export interface Comment {

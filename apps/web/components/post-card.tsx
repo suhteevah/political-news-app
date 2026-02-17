@@ -7,7 +7,17 @@ export function PostCard({ post }: { post: Post }) {
   const timeAgo = getTimeAgo(new Date(post.created_at));
 
   return (
-    <article className="border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
+    <article className={`border rounded-xl p-4 transition-colors ${
+      post.is_breaking
+        ? "border-red-800/40 bg-red-950/10 hover:border-red-700/50"
+        : "border-gray-800 hover:border-gray-700"
+    }`}>
+      {post.is_breaking && (
+        <div className="flex items-center gap-1.5 mb-2 text-xs font-bold text-red-400 uppercase tracking-wider">
+          <span>🚨</span>
+          <span>Breaking News</span>
+        </div>
+      )}
       <div className="flex items-start gap-3">
         {post.source === "x" && post.x_author_avatar && (
           <img
@@ -18,10 +28,12 @@ export function PostCard({ post }: { post: Post }) {
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 text-sm">
-            {post.source === "x" ? (
+            {post.source === "x" || post.source === "rss" || post.source === "youtube" ? (
               <>
                 <span className="font-semibold">{post.x_author_name}</span>
-                <span className="text-gray-500">@{post.x_author_handle}</span>
+                {post.x_author_handle && (
+                  <span className="text-gray-500">@{post.x_author_handle}</span>
+                )}
               </>
             ) : (
               <span className="font-semibold">Community Post</span>

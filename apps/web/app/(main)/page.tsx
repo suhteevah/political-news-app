@@ -3,6 +3,7 @@ import { CategoryTabs } from "@/components/category-tabs";
 import { PostCard } from "@/components/post-card";
 import { NewsletterSignup } from "@/components/newsletter-signup";
 import { FEED_PAGE_SIZE } from "@repo/shared";
+import type { Post } from "@repo/shared";
 
 export default async function FeedPage({
   searchParams,
@@ -14,17 +15,59 @@ export default async function FeedPage({
 
   const { data: { user } } = await supabase.auth.getUser();
 
+  // Fetch more posts than needed so we can filter muted sources and still have enough
   let query = supabase
     .from("posts")
     .select("*")
     .order("created_at", { ascending: false })
-    .limit(FEED_PAGE_SIZE);
+    .limit(FEED_PAGE_SIZE * 2);
 
   if (category) {
     query = query.eq("category", category);
   }
 
-  const { data: posts } = await query;
+  const { data: rawPosts } = await query;
+
+  // Apply user source preferences (pin/mute) if logged in
+  let posts: Post[] = (rawPosts as Post[]) || [];
+
+  if (user) {
+    const { data: prefs } = await supabase
+      .from("user_source_preferences")
+      .select("source_handle, preference")
+      .eq("user_id", user.id);
+
+    if (prefs && prefs.length > 0) {
+      const prefMap: Record<string, string> = {};
+      prefs.forEach((p) => {
+        prefMap[p.source_handle] = p.preference;
+      });
+
+      // Filter out muted sources
+      posts = posts.filter(
+        (p) => !p.x_author_handle || prefMap[p.x_author_handle] !== "muted"
+      );
+
+      // Sort: pinned sources first, then by date
+      posts.sort((a, b) => {
+        const aPinned = a.x_author_handle && prefMap[a.x_author_handle] === "pinned" ? 1 : 0;
+        const bPinned = b.x_author_handle && prefMap[b.x_author_handle] === "pinned" ? 1 : 0;
+
+        // Breaking posts always on top
+        const aBreaking = a.is_breaking ? 2 : 0;
+        const bBreaking = b.is_breaking ? 2 : 0;
+
+        const aPriority = aBreaking + aPinned;
+        const bPriority = bBreaking + bPinned;
+
+        if (aPriority !== bPriority) return bPriority - aPriority;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+    }
+  }
+
+  // Trim to page size
+  posts = posts.slice(0, FEED_PAGE_SIZE);
 
   // Insert newsletter CTA after the 5th post
   const NEWSLETTER_POSITION = 5;

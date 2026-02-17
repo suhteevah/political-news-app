@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getUserPlan } from "@/lib/get-user-plan";
 import { ManageSubscriptionButton } from "@/components/manage-subscription-button";
 import { ReferralCard } from "@/components/referral-card";
+import { AlertPreferences } from "@/components/alert-preferences";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
@@ -91,6 +92,13 @@ export default async function ProfilePage() {
           )}
         </div>
       </div>
+
+      {/* Email Preferences (Pro+ only) */}
+      {currentPlan !== "free" && (
+        <div className="mt-4">
+          <AlertPreferences />
+        </div>
+      )}
 
       {/* Referral Section */}
       <div className="mt-4">

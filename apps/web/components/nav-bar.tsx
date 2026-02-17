@@ -22,9 +22,14 @@ export async function NavBar() {
             Pricing
           </Link>
           {user ? (
-            <Link href="/profile" className="text-sm text-gray-400 hover:text-gray-100 transition-colors">
-              Profile
-            </Link>
+            <>
+              <Link href="/feed-settings" className="text-sm text-gray-400 hover:text-gray-100 transition-colors" title="Customize Feed">
+                ⚙️ Feed
+              </Link>
+              <Link href="/profile" className="text-sm text-gray-400 hover:text-gray-100 transition-colors">
+                Profile
+              </Link>
+            </>
           ) : (
             <Link href="/login" className="text-sm px-4 py-1.5 bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
               Sign In

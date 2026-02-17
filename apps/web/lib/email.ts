@@ -14,16 +14,23 @@ export async function sendEmail({
   to,
   subject,
   html,
+  attachments,
 }: {
   to: string;
   subject: string;
   html: string;
+  attachments?: Array<{
+    filename: string;
+    content: Buffer;
+    contentType: string;
+  }>;
 }) {
   return transporter.sendMail({
     from: `"The Right Wire" <${process.env.SMTP_USER || "suhteevah@gmail.com"}>`,
     to,
     subject,
     html,
+    attachments,
   });
 }
 

@@ -1,0 +1,29 @@
+name: Intelligence Brief Email
+
+on:
+  schedule:
+    # 6am EST = 11:00 UTC (before daily digest)
+    - cron: '0 11 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-intelligence-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Send Intelligence Brief to subscribers
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://the-right-wire.com/api/cron/intelligence-brief")
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -n -1)
+
+          echo "Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Intelligence brief failed with status $http_code"
+            exit 1
+          fi

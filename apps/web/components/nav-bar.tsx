@@ -23,6 +23,9 @@ export async function NavBar() {
           </Link>
           {user ? (
             <>
+              <Link href="/dashboard" className="text-sm text-gray-400 hover:text-gray-100 transition-colors" title="Intelligence Dashboard">
+                📊 Intel
+              </Link>
               <Link href="/feed-settings" className="text-sm text-gray-400 hover:text-gray-100 transition-colors" title="Customize Feed">
                 ⚙️ Feed
               </Link>

@@ -10,10 +10,10 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Get referral code
+  // Get referral code and Pro expiry
   const { data: profile } = await supabase
     .from("profiles")
-    .select("referral_code")
+    .select("referral_code, referral_pro_until")
     .eq("id", user.id)
     .single();
 
@@ -29,10 +29,21 @@ export async function GET() {
     .eq("referrer_id", user.id)
     .eq("status", "completed");
 
+  // Calculate days of Pro remaining from referrals
+  let referralProDaysLeft = 0;
+  if (profile?.referral_pro_until) {
+    const expiry = new Date(profile.referral_pro_until);
+    const now = new Date();
+    if (expiry > now) {
+      referralProDaysLeft = Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    }
+  }
+
   return NextResponse.json({
     referralCode: profile?.referral_code,
     referralLink: `https://the-right-wire.com/?ref=${profile?.referral_code}`,
     totalReferrals: totalReferrals || 0,
     completedReferrals: completedReferrals || 0,
+    referralProDaysLeft,
   });
 }

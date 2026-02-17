@@ -1,0 +1,29 @@
+name: Weekly Newsletter
+
+on:
+  schedule:
+    # Monday at 8am EST = 13:00 UTC
+    - cron: '0 13 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-newsletter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send weekly Wire Report newsletter
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://the-right-wire.com/api/cron/weekly-newsletter")
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -n -1)
+
+          echo "Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Weekly newsletter failed with status $http_code"
+            exit 1
+          fi

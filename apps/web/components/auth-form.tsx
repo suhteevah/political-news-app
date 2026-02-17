@@ -57,6 +57,8 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         setLoading(false);
         return;
       }
+      // Track referral if user came via referral link
+      fetch("/api/referral/track", { method: "POST" }).catch(() => {});
       router.push("/");
     } else {
       const { error } = await supabase.auth.signInWithPassword({

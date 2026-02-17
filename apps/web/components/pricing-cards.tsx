@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { UserPlan } from "@/lib/get-user-plan";
+import { events } from "@/lib/analytics";
 
 const CHECK = (
   <svg className="w-5 h-5 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -57,28 +58,20 @@ export function PricingCards({
       return;
     }
     setLoading(plan);
-
-    const priceEnvMap: Record<string, string> = {
-      "pro-monthly": process.env.NEXT_PUBLIC_STRIPE_PRO_MONTHLY_PRICE_ID || "",
-      "pro-yearly": process.env.NEXT_PUBLIC_STRIPE_PRO_YEARLY_PRICE_ID || "",
-      "intelligence-monthly": process.env.NEXT_PUBLIC_STRIPE_INTELLIGENCE_MONTHLY_PRICE_ID || "",
-    };
-
-    const priceKey = plan === "pro"
-      ? `pro-${billingPeriod}`
-      : "intelligence-monthly";
-
-    const priceId = priceEnvMap[priceKey];
+    events.checkoutStarted(plan);
 
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ priceId, plan }),
+        body: JSON.stringify({ plan, billingPeriod }),
       });
       const data = await res.json();
       if (data.url) {
         window.location.href = data.url;
+      } else if (data.error) {
+        console.error("Checkout error:", data.error);
+        setLoading(null);
       }
     } catch {
       setLoading(null);

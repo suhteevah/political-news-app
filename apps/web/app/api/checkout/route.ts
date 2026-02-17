@@ -10,10 +10,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { priceId, plan } = await request.json();
+  const { plan, billingPeriod } = await request.json();
 
-  if (!priceId || !plan) {
-    return NextResponse.json({ error: "Missing priceId or plan" }, { status: 400 });
+  if (!plan || !["pro", "intelligence"].includes(plan)) {
+    return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
+  }
+
+  // Resolve price ID server-side (never trust client-sent price IDs)
+  let priceId: string;
+  if (plan === "pro") {
+    priceId = billingPeriod === "yearly"
+      ? PLANS.pro.yearly_price_id
+      : PLANS.pro.monthly_price_id;
+  } else {
+    priceId = PLANS.intelligence.monthly_price_id;
+  }
+
+  if (!priceId) {
+    return NextResponse.json({ error: "Price not configured" }, { status: 500 });
   }
 
   // Check if user already has a Stripe customer ID

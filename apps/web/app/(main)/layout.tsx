@@ -1,4 +1,5 @@
 import { NavBar } from "@/components/nav-bar";
+import { NewsletterSignup } from "@/components/newsletter-signup";
 import Link from "next/link";
 
 export default function MainLayout({
@@ -12,6 +13,9 @@ export default function MainLayout({
       <div className="max-w-3xl mx-auto px-4 py-6">{children}</div>
       <footer className="border-t border-gray-800 mt-16 py-8 text-sm text-gray-500">
         <div className="max-w-3xl mx-auto px-4">
+          <div className="mb-8">
+            <NewsletterSignup />
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-4">
             <p>&copy; {new Date().getFullYear()} The Right Wire</p>
             <div className="flex flex-wrap gap-4">

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { getUserPlan } from "@/lib/get-user-plan";
 import { ManageSubscriptionButton } from "@/components/manage-subscription-button";
+import { ReferralCard } from "@/components/referral-card";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
@@ -89,6 +90,11 @@ export default async function ProfilePage() {
             <ManageSubscriptionButton />
           )}
         </div>
+      </div>
+
+      {/* Referral Section */}
+      <div className="mt-4">
+        <ReferralCard />
       </div>
 
       <form action="/api/auth/signout" method="post" className="mt-4">

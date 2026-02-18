@@ -2,6 +2,9 @@ import { createClient } from "@/lib/supabase/server";
 import { AddSourceForm } from "@/components/add-source-form";
 import { SourceList } from "@/components/source-list";
 import { BreakingAlertForm } from "@/components/breaking-alert-form";
+import { WireConfigPanel } from "@/components/wire-config-panel";
+import { WireColumnPreview } from "@/components/wire-column-preview";
+import { AnalyticsDashboard } from "@/components/analytics-dashboard";
 import { redirect } from "next/navigation";
 
 // Hardcoded owner ID — only this user can access admin
@@ -27,9 +30,24 @@ export default async function AdminPage() {
     <>
       <h1 className="text-2xl font-bold mb-4">Admin Dashboard</h1>
 
+      {/* Analytics Section */}
+      <div className="border border-gray-800 rounded-xl p-6 mb-6">
+        <AnalyticsDashboard />
+      </div>
+
       {/* Breaking News Alert Section */}
       <div className="border border-red-800/30 rounded-xl p-6 mb-6 bg-red-950/10">
         <BreakingAlertForm />
+      </div>
+
+      {/* WIRE AI Configuration */}
+      <div className="border border-amber-800/30 rounded-xl p-6 mb-6 bg-amber-950/10">
+        <WireConfigPanel />
+      </div>
+
+      {/* WIRE Pending Column */}
+      <div className="border border-amber-800/30 rounded-xl p-6 mb-6 bg-amber-950/10">
+        <WireColumnPreview />
       </div>
 
       {/* Source Management Section */}

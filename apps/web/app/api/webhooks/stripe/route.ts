@@ -71,6 +71,28 @@ export async function POST(request: Request) {
             user_id: session.metadata.user_id,
             metadata: { plan, subscription_id: subscription.id },
           });
+
+          // Track affiliate commission for Intelligence subscriptions
+          const userId = session.metadata.user_id;
+          if (plan === "intelligence" && userId) {
+            const { data: referral } = await supabase
+              .from("referrals")
+              .select("referrer_id")
+              .eq("referred_id", userId)
+              .eq("status", "completed")
+              .single();
+
+            if (referral?.referrer_id) {
+              // 20% of $19.99 = $3.998 -> 400 cents
+              await supabase.from("affiliate_commissions").insert({
+                referrer_id: referral.referrer_id,
+                referred_id: userId,
+                stripe_subscription_id: subscription.id,
+                amount_cents: 400,
+                status: "pending",
+              });
+            }
+          }
         }
         break;
       }

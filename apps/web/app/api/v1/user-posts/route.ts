@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     let query = supabase
       .from("user_posts")
       .select(
-        "id, user_id, content, created_at, profiles(username, display_name, avatar_url)",
+        "id, user_id, content, media_urls, created_at, profiles(username, display_name, avatar_url)",
         { count: "exact" }
       )
       .order("created_at", { ascending: false });
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
 
     // Parse and validate body
     const body = await request.json();
-    const { content } = body as { content?: string };
+    const { content, media_urls } = body as { content?: string; media_urls?: string[] };
 
     if (
       !content ||
@@ -95,14 +95,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate media_urls if provided
+    const validMediaUrls: string[] = [];
+    if (media_urls && Array.isArray(media_urls)) {
+      for (const url of media_urls.slice(0, 4)) {
+        if (typeof url === "string" && url.startsWith("http")) {
+          validMediaUrls.push(url);
+        }
+      }
+    }
+
     // Insert the new user post
+    const insertData: Record<string, unknown> = {
+      user_id: user.id,
+      content: content.trim(),
+    };
+    if (validMediaUrls.length > 0) {
+      insertData.media_urls = validMediaUrls;
+    }
+
     const { data: post, error: insertError } = await supabase
       .from("user_posts")
-      .insert({
-        user_id: user.id,
-        content: content.trim(),
-      })
-      .select("id, user_id, content, created_at")
+      .insert(insertData)
+      .select("id, user_id, content, media_urls, created_at")
       .single();
 
     if (insertError) {

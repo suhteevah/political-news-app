@@ -1,4 +1,5 @@
 import { VoteButton } from "./vote-button";
+import { ProBadge } from "./pro-badge";
 
 interface UserPostWithProfile {
   id: string;
@@ -15,8 +16,15 @@ interface UserPostWithProfile {
   };
 }
 
-export function UserPostCard({ post }: { post: UserPostWithProfile }) {
+export function UserPostCard({
+  post,
+  userPlan,
+}: {
+  post: UserPostWithProfile;
+  userPlan?: "pro" | "intelligence";
+}) {
   const timeAgo = getTimeAgo(new Date(post.created_at));
+  const images = post.media_urls?.filter(Boolean) ?? [];
 
   return (
     <article className="border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
@@ -27,11 +35,43 @@ export function UserPostCard({ post }: { post: UserPostWithProfile }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 text-sm">
             <span className="font-semibold">{post.user.display_name}</span>
+            {userPlan && <ProBadge plan={userPlan} />}
             <span className="text-gray-500">@{post.user.username}</span>
             <span className="text-gray-600">·</span>
             <span className="text-gray-500">{timeAgo}</span>
           </div>
           <p className="mt-2 text-gray-200 whitespace-pre-wrap">{post.content}</p>
+
+          {/* Image grid */}
+          {images.length > 0 && (
+            <div
+              className={`mt-3 grid gap-2 ${
+                images.length === 1
+                  ? "grid-cols-1"
+                  : "grid-cols-2"
+              }`}
+            >
+              {images.slice(0, 4).map((url, i) => (
+                <a
+                  key={i}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block overflow-hidden rounded-lg border border-gray-800"
+                >
+                  <img
+                    src={url}
+                    alt=""
+                    className={`w-full object-cover ${
+                      images.length === 1 ? "max-h-96" : "max-h-64"
+                    }`}
+                    loading="lazy"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+
           <div className="flex items-center gap-6 mt-3">
             <VoteButton targetType="post" targetId={post.id} initialCount={post.upvote_count} />
           </div>

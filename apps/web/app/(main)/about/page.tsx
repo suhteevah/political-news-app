@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SupportWireButton } from "@/components/support-wire-button";
 
 export const metadata = {
   title: "About — The Right Wire",
@@ -47,6 +48,14 @@ export default function AboutPage() {
           feeds and biased curation. We wanted a simple, fast, no-nonsense way to stay informed.
           So we built it.
         </p>
+
+        <div className="mt-10 pt-6 border-t border-gray-800">
+          <h2 className="text-xl font-semibold text-white mb-3">Support Our Mission</h2>
+          <p className="text-sm text-gray-400 mb-4">
+            If you value independent, ad-free political news, consider leaving a tip to help keep The Right Wire running.
+          </p>
+          <SupportWireButton />
+        </div>
 
         <div className="mt-10 pt-6 border-t border-gray-800 text-sm text-gray-500">
           <p>

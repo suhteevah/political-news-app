@@ -1,0 +1,29 @@
+name: WIRE Weekly Column — Publish
+
+on:
+  schedule:
+    # Monday at 7:00 AM EST (12:00 UTC)
+    - cron: '0 12 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger WIRE column publish
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://the-right-wire.com/api/cron/wire-column-publish")
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -n -1)
+
+          echo "Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::WIRE column publish failed with status $http_code"
+            exit 1
+          fi

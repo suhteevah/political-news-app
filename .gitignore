@@ -11,6 +11,7 @@ dist/
 
 # Claude session docs (contain credentials for local use only)
 CLAUDE.md
+CONTEXT.md
 SESSION_STATE.md
 
 # Windows reserved device names (cause git add failures)

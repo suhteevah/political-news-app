@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { getUserPlan } from "@/lib/get-user-plan";
 import { PricingCards } from "@/components/pricing-cards";
+import { SupportWireButton } from "@/components/support-wire-button";
 
 export const metadata = {
   title: "Pricing — The Right Wire",
@@ -10,9 +11,9 @@ export const metadata = {
 export default async function PricingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ success?: string; canceled?: string }>;
+  searchParams: Promise<{ success?: string; canceled?: string; donated?: string }>;
 }) {
-  const { success, canceled } = await searchParams;
+  const { success, canceled, donated } = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   const currentPlan = await getUserPlan(user?.id);
@@ -29,6 +30,11 @@ export default async function PricingPage({
           Checkout canceled. No charges were made.
         </div>
       )}
+      {donated && (
+        <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-center">
+          Thank you for supporting The Right Wire! ❤️ Your generosity keeps us independent.
+        </div>
+      )}
 
       <div className="text-center mb-10">
         <h1 className="text-4xl font-bold">Choose Your Plan</h1>
@@ -38,6 +44,10 @@ export default async function PricingPage({
       </div>
 
       <PricingCards currentPlan={currentPlan} isLoggedIn={!!user} />
+
+      <div className="mt-12 flex justify-center">
+        <SupportWireButton />
+      </div>
 
       <div className="mt-16 text-center text-sm text-gray-500">
         <p>All plans include a 7-day money-back guarantee. Cancel anytime.</p>

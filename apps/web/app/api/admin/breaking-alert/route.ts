@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createClient as createAdminClient } from "@supabase/supabase-js";
 import { sendEmail, buildBreakingAlertHtml } from "@/lib/email";
+import { generateBreakingComment, isWireEnabled, getWireConfig } from "@/lib/wire-ai";
 
 const OWNER_USER_ID = "2dea127a-e812-41f1-9e83-95b12710b890";
 
@@ -139,10 +140,51 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  // ── WIRE Auto-Comment on Breaking News ──────────────────────
+  let wireCommented = false;
+  try {
+    const wireEnabled = await isWireEnabled(admin);
+    if (wireEnabled && process.env.WIRE_USER_ID) {
+      // Check daily breaking comment cap
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      const { count: todayCount } = await admin
+        .from("comments")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", process.env.WIRE_USER_ID)
+        .gte("created_at", todayStart.toISOString());
+
+      const maxPerDay = (await getWireConfig(admin, "max_breaking_comments_per_day")) ?? 5;
+
+      if ((todayCount ?? 0) < maxPerDay) {
+        const wireComment = await generateBreakingComment(
+          post.content?.slice(0, 100) || post.x_author_name || "Breaking story",
+          post.category || "Breaking News"
+        );
+
+        await admin.from("comments").insert({
+          post_id: postId,
+          user_id: process.env.WIRE_USER_ID,
+          content: wireComment,
+        });
+
+        await admin.from("analytics_events").insert({
+          event_type: "wire_breaking_comment",
+          metadata: { post_id: postId, category: post.category },
+        });
+
+        wireCommented = true;
+      }
+    }
+  } catch (wireErr) {
+    console.error("WIRE auto-comment failed (non-blocking):", wireErr);
+  }
+
   return NextResponse.json({
     message: `Breaking alert sent to ${sent}/${proUserIds.size} Pro subscribers`,
     post_id: postId,
     sent,
+    wire_commented: wireCommented,
     errors: errors.length > 0 ? errors : undefined,
   });
 }

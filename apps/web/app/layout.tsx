@@ -38,7 +38,7 @@ export default function RootLayout({
         <Script
           defer
           data-domain="the-right-wire.com"
-          src="https://plausible.io/js/script.tagged-events.js"
+          src="https://plausible.io/js/script.js"
           strategy="afterInteractive"
         />
       </head>

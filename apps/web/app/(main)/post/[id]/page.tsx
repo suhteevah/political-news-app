@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { PostCard } from "@/components/post-card";
 import { CommentSection } from "@/components/comment-section";
+import { AskWireButton } from "@/components/ask-wire-button";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
@@ -28,6 +29,8 @@ export async function generateMetadata({
   const author = post.x_author_name || post.x_author_handle || "Community";
   const title = `${author} on ${post.category} — The Right Wire`;
 
+  const ogImageUrl = `/api/og?title=${encodeURIComponent(post.content.slice(0, 200))}&source=${encodeURIComponent(post.x_author_handle || "")}&category=${encodeURIComponent(post.category || "Politics")}`;
+
   return {
     title,
     description: snippet,
@@ -36,11 +39,16 @@ export async function generateMetadata({
       description: snippet,
       type: "article",
       siteName: "The Right Wire",
+      images: [{
+        url: ogImageUrl,
+        width: 1200,
+        height: 630,
+      }],
     },
     twitter: {
-      card: "summary",
-      title,
-      description: snippet,
+      card: "summary_large_image",
+      title: `${post.content.slice(0, 60)}... — The Right Wire`,
+      images: [ogImageUrl],
     },
   };
 }
@@ -98,6 +106,9 @@ export default async function PostDetailPage({
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <PostCard post={post} />
+      <div className="mt-4">
+        <AskWireButton postId={post.id} />
+      </div>
       <CommentSection postId={post.id} />
     </div>
   );

@@ -1,0 +1,29 @@
+name: WIRE Evening Recap
+
+on:
+  schedule:
+    # Daily at 9:00 PM EST (02:00 UTC next day)
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger WIRE evening recap
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://the-right-wire.com/api/cron/wire-briefing?type=evening")
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | head -n -1)
+
+          echo "Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::WIRE evening recap failed with status $http_code"
+            exit 1
+          fi

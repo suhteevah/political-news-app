@@ -1,34 +1,52 @@
 import type { Post } from "@repo/shared";
 import { VoteButton } from "./vote-button";
 import { EmbedLinkButton } from "./embed-link-button";
+import { WireBadge } from "./wire-badge";
 import Link from "next/link";
 
 export function PostCard({ post }: { post: Post }) {
   const timeAgo = getTimeAgo(new Date(post.created_at));
+  const isWire = post.source === "wire";
+
+  const cardClasses = post.is_breaking
+    ? "border-red-800/40 bg-red-950/10 hover:border-red-700/50"
+    : isWire
+      ? "border-amber-800/40 bg-amber-950/10 hover:border-amber-700/50"
+      : "border-gray-800 hover:border-gray-700";
 
   return (
-    <article className={`border rounded-xl p-4 transition-colors ${
-      post.is_breaking
-        ? "border-red-800/40 bg-red-950/10 hover:border-red-700/50"
-        : "border-gray-800 hover:border-gray-700"
-    }`}>
+    <article className={`border rounded-xl p-4 transition-colors ${cardClasses}`}>
       {post.is_breaking && (
         <div className="flex items-center gap-1.5 mb-2 text-xs font-bold text-red-400 uppercase tracking-wider">
           <span>🚨</span>
           <span>Breaking News</span>
         </div>
       )}
+      {isWire && !post.is_breaking && (
+        <div className="flex items-center gap-1.5 mb-2 text-xs font-bold text-amber-400 uppercase tracking-wider">
+          <span>⚡</span>
+          <span>WIRE Analysis</span>
+        </div>
+      )}
       <div className="flex items-start gap-3">
-        {post.source === "x" && post.x_author_avatar && (
-          <img
-            src={post.x_author_avatar}
-            alt=""
-            className="w-10 h-10 rounded-full"
-          />
+        {isWire ? (
+          <div className="w-10 h-10 rounded-full bg-amber-950/50 border border-amber-700/40 flex items-center justify-center text-amber-400 text-lg shrink-0">
+            ⚡
+          </div>
+        ) : (
+          post.source === "x" && post.x_author_avatar && (
+            <img
+              src={post.x_author_avatar}
+              alt=""
+              className="w-10 h-10 rounded-full"
+            />
+          )
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 text-sm">
-            {post.source === "x" || post.source === "rss" || post.source === "youtube" ? (
+            {isWire ? (
+              <WireBadge size="sm" />
+            ) : post.source === "x" || post.source === "rss" || post.source === "youtube" ? (
               <>
                 <span className="font-semibold">{post.x_author_name}</span>
                 {post.x_author_handle && (

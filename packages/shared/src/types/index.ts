@@ -4,12 +4,13 @@ export interface User {
   display_name: string;
   avatar_url: string | null;
   bio: string | null;
+  is_bot?: boolean;
   created_at: string;
 }
 
 export interface Post {
   id: string;
-  source: "x" | "user" | "rss" | "youtube";
+  source: "x" | "user" | "rss" | "youtube" | "wire";
   x_tweet_id: string | null;
   x_author_handle: string | null;
   x_author_name: string | null;

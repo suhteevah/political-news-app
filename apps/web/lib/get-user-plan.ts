@@ -1,11 +1,26 @@
 import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type UserPlan = "free" | "pro" | "intelligence";
 
-export async function getUserPlan(userId?: string): Promise<UserPlan> {
+/**
+ * Resolves the user's current plan. Priority order:
+ * 1. Active Stripe subscription (highest)
+ * 2. Referral-earned Pro time (fallback)
+ * 3. Free (default)
+ *
+ * @param userId - The user's UUID
+ * @param supabaseClient - Optional Supabase client to use. If not provided,
+ *   creates a cookie-based server client (for web routes). For mobile/v1 routes,
+ *   pass an admin client or mobile client to avoid cookie dependency.
+ */
+export async function getUserPlan(
+  userId?: string,
+  supabaseClient?: SupabaseClient
+): Promise<UserPlan> {
   if (!userId) return "free";
 
-  const supabase = await createClient();
+  const supabase = supabaseClient || (await createClient());
 
   // Check for paid Stripe subscription first
   const { data: subscription } = await supabase
@@ -36,8 +51,11 @@ export async function getUserPlan(userId?: string): Promise<UserPlan> {
 }
 
 // Helper to get referral Pro expiry for display purposes
-export async function getReferralProExpiry(userId: string): Promise<Date | null> {
-  const supabase = await createClient();
+export async function getReferralProExpiry(
+  userId: string,
+  supabaseClient?: SupabaseClient
+): Promise<Date | null> {
+  const supabase = supabaseClient || (await createClient());
   const { data: profile } = await supabase
     .from("profiles")
     .select("referral_pro_until")

@@ -34,7 +34,7 @@ export interface AskWireResponse {
 // Default model identifiers
 // ---------------------------------------------------------------------------
 
-const DEFAULT_COMMENTATOR_MODEL = "claude-3-5-haiku-20241022";
+const DEFAULT_COMMENTATOR_MODEL = "claude-haiku-4-5";
 const DEFAULT_FACTS_MODEL = "claude-sonnet-4-20250514";
 
 // ---------------------------------------------------------------------------

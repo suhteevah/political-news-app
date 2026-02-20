@@ -26,7 +26,7 @@ export function AskWireButton({ postId }: { postId: string }) {
       const data = await res.json();
 
       if (!res.ok) {
-        setError(data.error || "Something went wrong");
+        setError(data.detail ? `${data.error}: ${data.detail}` : (data.error || "Something went wrong"));
         return;
       }
 

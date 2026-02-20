@@ -26,7 +26,7 @@ export async function sendEmail({
   }>;
 }) {
   return transporter.sendMail({
-    from: `"The Right Wire" <${process.env.SMTP_USER || "suhteevah@gmail.com"}>`,
+    from: `"The Right Wire" <${process.env.FROM_EMAIL || process.env.SMTP_USER || "wire-bot@the-right-wire.com"}>`,
     to,
     subject,
     html,

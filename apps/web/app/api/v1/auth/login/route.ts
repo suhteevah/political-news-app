@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createMobileClient as createClient } from "@/lib/supabase/mobile";
 import { getUserPlan } from "@/lib/get-user-plan";
 
 export async function POST(request: NextRequest) {
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const plan = await getUserPlan(user.id);
+    const plan = await getUserPlan(user.id, supabase);
 
     return NextResponse.json({
       user: {

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createMobileClient as createClient } from "@/lib/supabase/mobile";
 
 const VALID_TARGET_TYPES = ["post", "comment"] as const;
 type TargetType = (typeof VALID_TARGET_TYPES)[number];

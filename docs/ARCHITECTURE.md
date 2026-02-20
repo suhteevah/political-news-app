@@ -1,44 +1,46 @@
 # The Right Wire — Architecture
 
 > System architecture, data flow, and key technical decisions.
-> Last updated: 2026-02-17
+> Last updated: 2026-02-20
 
 ---
 
 ## High-Level Overview
 
-The Right Wire is a Next.js 15 monorepo deployed on Vercel. It aggregates content from 32+ Twitter/X accounts, RSS feeds, and YouTube channels into a unified feed with community features. Revenue comes from Stripe subscriptions (no ads).
+The Right Wire is a Next.js 15 monorepo deployed on Vercel. It aggregates content from 32+ Twitter/X accounts, RSS feeds, and YouTube channels into a unified feed with community features. Revenue comes from Stripe subscriptions and in-app purchases (no ads).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        USERS (Web + Mobile)                      │
 │                                                                   │
 │  Web App (Next.js)          Mobile Apps (REST API /api/v1/*)     │
-│  - Server Components        - Android (planned)                   │
-│  - Client Components        - iOS (planned)                       │
+│  - Server Components        - Android                             │
+│  - Client Components        - iOS                                 │
+│  - Cookie-based auth        - Bearer token auth                   │
 └─────────┬──────────────────────────────┬────────────────────────┘
           │                              │
           ▼                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     NEXT.JS APP ROUTER                           │
 │                                                                   │
-│  Pages (20)              API Routes (36)                          │
+│  Pages (20)              API Routes (70+)                         │
 │  - Feed, Forums          - Auth, Posts, Comments, Votes           │
 │  - Community, Admin      - Cron (scraping, digest, newsletter)    │
 │  - Dashboard, Settings   - Webhooks (Stripe)                      │
-│  - Legal, Auth           - Mobile v1 (26 endpoints)               │
+│  - Legal, Auth           - Mobile v1 (53 route files)             │
+│                          - WIRE AI (briefings, hot takes, column) │
 └─────────┬──────────┬──────────┬──────────┬─────────────────────┘
           │          │          │          │
           ▼          ▼          ▼          ▼
-┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-│ Supabase │ │  Stripe  │ │  Gmail   │ │  GitHub  │
-│          │ │          │ │  SMTP    │ │  Actions │
-│ Postgres │ │ Checkout │ │          │ │          │
-│ Auth     │ │ Portal   │ │ Digest   │ │ Scraping │
-│ RLS      │ │ Webhooks │ │ Alerts   │ │ Cron     │
-│ Triggers │ │          │ │ News-    │ │          │
-│          │ │          │ │ letter   │ │          │
-└──────────┘ └──────────┘ └──────────┘ └──────────┘
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│ Supabase │ │  Stripe  │ │  Gmail   │ │  GitHub  │ │Anthropic │
+│          │ │          │ │  SMTP    │ │  Actions │ │  Claude  │
+│ Postgres │ │ Checkout │ │          │ │          │ │          │
+│ Auth     │ │ Portal   │ │ Digest   │ │ Scraping │ │ Haiku    │
+│ RLS      │ │ Webhooks │ │ Alerts   │ │ Cron     │ │ Sonnet   │
+│ Storage  │ │ IAP      │ │ News-    │ │ WIRE AI  │ │ WIRE AI  │
+│ Triggers │ │          │ │ letter   │ │          │ │          │
+└──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
 ```
 
 ---
@@ -53,22 +55,52 @@ J:\political news app/
 │   │   ├── (main)/              Main layout group (feed, forums, etc.)
 │   │   └── api/                 API endpoints
 │   │       ├── admin/           Admin-only endpoints
-│   │       ├── cron/            Cron job endpoints (scraping, digest, etc.)
-│   │       ├── v1/              Mobile REST API (26 endpoints)
+│   │       ├── cron/            Cron job endpoints (scraping, digest, WIRE AI, etc.)
+│   │       ├── v1/              Mobile REST API (53 route files, 12 domains)
+│   │       │   ├── auth/        login, signup, refresh, forgot/reset/change-password, delete-account
+│   │       │   ├── posts/       feed, detail, categories
+│   │       │   ├── comments/    create, delete
+│   │       │   ├── votes/       cast, remove, batch check
+│   │       │   ├── forums/      list, detail, threads, thread delete, membership
+│   │       │   ├── user-posts/  community posts
+│   │       │   ├── users/       profile (me, public, followers, following)
+│   │       │   ├── follows/     follow/unfollow
+│   │       │   ├── bookmarks/   CRUD, batch check
+│   │       │   ├── notifications/ inbox, mark read, delete, preferences
+│   │       │   ├── devices/     push token registration
+│   │       │   ├── iap/         validate, restore (Apple/Google)
+│   │       │   ├── checkout/    Stripe Checkout (mobile deep links)
+│   │       │   ├── portal/      Stripe Customer Portal
+│   │       │   ├── donate/      one-time tips
+│   │       │   ├── reports/     content moderation
+│   │       │   ├── blocked-users/ block/unblock
+│   │       │   ├── uploads/     avatar upload
+│   │       │   ├── search/      posts, users, forums
+│   │       │   ├── intelligence/ brief (JSON)
+│   │       │   ├── keyword-alerts/ CRUD
+│   │       │   ├── trends/      analytics
+│   │       │   ├── wire/        ask, quota
+│   │       │   ├── analytics/   batch event tracking
+│   │       │   ├── app/         version check
+│   │       │   └── subscription, email-preferences, referral, feed-preferences, health
 │   │       └── webhooks/        Stripe webhook handler
 │   ├── components/              React components
 │   ├── lib/                     Shared utilities
-│   │   ├── supabase/            Supabase client factories
+│   │   ├── supabase/
+│   │   │   ├── client.ts        Browser Supabase client (cookie auth)
+│   │   │   ├── server.ts        Server Supabase client (cookie auth)
+│   │   │   └── mobile.ts        Mobile Supabase client (Bearer token auth)
 │   │   ├── stripe.ts            Stripe client (lazy proxy pattern)
 │   │   ├── email.ts             Nodemailer transport + HTML builders
 │   │   ├── scraper.ts           Twitter/X scraper (multi-strategy)
 │   │   ├── rss-scraper.ts       RSS/YouTube feed scraper
-│   │   ├── get-user-plan.ts     Plan resolution (Stripe → referral → free)
+│   │   ├── get-user-plan.ts     Plan resolution (Stripe → IAP → referral → free)
 │   │   ├── intelligence-brief.tsx  PDF generation for Intelligence tier
+│   │   ├── wire-ai.ts           WIRE AI service (Anthropic Claude, lazy proxy)
 │   │   └── analytics.ts         Analytics event tracking
 │   └── middleware.ts            Session refresh + referral cookie
 ├── packages/shared/             Shared constants (@repo/shared)
-├── supabase/migrations/         Database migrations (001-005)
+├── supabase/migrations/         Database migrations (001-009)
 ├── .github/workflows/           GitHub Actions cron jobs
 ├── docs/                        Project documentation
 └── scripts/                     Utility scripts (bulk import, testing)
@@ -117,7 +149,7 @@ User action → Supabase client (anon key + RLS) → Database
 ### Stripe Subscription Flow
 
 ```
-User clicks "Subscribe" on /pricing
+User clicks "Subscribe" on /pricing or POST /v1/checkout
        │
        ▼
 POST /api/checkout { plan, billingPeriod }
@@ -141,6 +173,24 @@ POST /api/webhooks/stripe
        └── invoice.payment_failed → Mark past_due
 ```
 
+### In-App Purchase Flow
+
+```
+Mobile app completes Apple/Google purchase
+       │
+       ▼
+POST /api/v1/iap/validate { platform, product_id, transaction_id, receipt_data }
+       │
+       ├── Resolve plan from product_id ("pro" or "intelligence")
+       ├── Resolve period from product_id ("yearly" = 365d, else 30d)
+       ├── Upsert iap_receipts table
+       ├── Upsert subscriptions table (source: "iap_apple" | "iap_google")
+       └── Track analytics event
+              │
+              ▼
+       Subscription active (getUserPlan returns "pro" or "intelligence")
+```
+
 ### Plan Resolution
 
 ```
@@ -148,6 +198,7 @@ getUserPlan(userId)
        │
        ├── 1. Check subscriptions table
        │      Active/trialing with valid current_period_end?
+       │      (source: stripe, iap_apple, or iap_google)
        │      → Return "pro" or "intelligence"
        │
        ├── 2. Check profiles.referral_pro_until
@@ -170,25 +221,51 @@ Cron trigger (GitHub Actions)
               ▼
        Nodemailer → Gmail SMTP (smtp.gmail.com:587)
        Rate limit: 500ms between emails
-       From: "The Right Wire" <suhteevah@gmail.com>
+       From: "The Right Wire" <wire-bot@the-right-wire.com>
+```
+
+### WIRE AI Content Generation
+
+```
+GitHub Actions cron triggers
+       │
+       ├── Morning Briefing (7am EST) → GET /api/cron/wire-briefing?type=morning
+       ├── Evening Recap (6pm EST) → GET /api/cron/wire-briefing?type=evening
+       ├── Hot Takes (every 4h) → GET /api/cron/wire-hot-takes
+       ├── Column Draft (Sun midnight) → GET /api/cron/wire-column
+       └── Column Publish (Mon 9am EST) → GET /api/cron/wire-column-publish
+              │
+              ▼
+       lib/wire-ai.ts → Anthropic Claude API
+       ├── Haiku (claude-haiku-4-5) → commentary, hot takes
+       └── Sonnet (claude-sonnet-4-20250514) → briefings, fact checks
+              │
+              ▼
+       Posts/comments inserted as WIRE bot user (UUID: 6ac9f0d2-...)
 ```
 
 ---
 
 ## Supabase Client Architecture
 
-Three client factories for different contexts:
+Four client factories for different contexts:
 
-| Client | File | Auth | Use Case |
-|--------|------|------|----------|
+| Client | File | Auth Method | Use Case |
+|--------|------|-------------|----------|
 | Browser | `lib/supabase/client.ts` | Anon key, browser cookies | Client components |
-| Server | `lib/supabase/server.ts` | Anon key, `next/headers` cookies | Server components, API routes |
-| Admin | Created inline | Service role key, empty cookie stubs | Webhooks, cron jobs, referral tracking |
+| Server | `lib/supabase/server.ts` | Anon key, `next/headers` cookies | Server components, web API routes |
+| Mobile | `lib/supabase/mobile.ts` | Anon key, Bearer token from `Authorization` header | Mobile v1 API routes |
+| Admin | Created inline | Service role key, no auth context | Webhooks, cron jobs, IAP, WIRE AI |
 
-**Why three clients?**
-- Browser client runs in the browser and manages cookies automatically
-- Server client reads cookies from the request to identify the user server-side
-- Admin client bypasses RLS for automated operations where there's no user session
+**Why four clients?**
+- **Browser** runs in the browser and manages cookies automatically
+- **Server** reads cookies from the request to identify the user server-side
+- **Mobile** extracts Bearer tokens from the `Authorization` header (mobile apps don't use cookies)
+- **Admin** bypasses RLS for automated operations where there's no user session
+
+The mobile client also exports:
+- `getAdminClient()` — Service role client for IAP validation, WIRE AI, analytics
+- `getMobileUser()` — Helper that creates a mobile client and extracts the authenticated user
 
 ---
 
@@ -205,6 +282,11 @@ Three client factories for different contexts:
 | 2026-02-17 | Haiku for WIRE comments | $0.18/day for full AI personality — absurdly cost-effective |
 | 2026-02-17 | Sonnet for facts mode | Accuracy matters more than cost for factual Q&A |
 | 2026-02-17 | wire_config table | Runtime config avoids redeployment for WIRE tuning |
+| 2026-02-20 | Bearer token auth for mobile | `lib/supabase/mobile.ts` — mobile apps send `Authorization: Bearer <token>` instead of cookies |
+| 2026-02-20 | Mobile client migration | All 44 existing v1 routes migrated from cookie-based `createClient` to `createMobileClient` |
+| 2026-02-20 | IAP alongside Stripe | `subscriptions.source` column supports `stripe`, `iap_apple`, `iap_google` — `getUserPlan` resolves uniformly |
+| 2026-02-20 | Separate push notification prefs | `notification_preferences` table independent from `email_preferences` — different channels, different defaults |
+| 2026-02-20 | App version gating | `app_config` table with `min_version`, `force_update`, `maintenance_mode` — no redeployment needed |
 
 ---
 
@@ -214,9 +296,9 @@ Three client factories for different contexts:
 
 | Table | Purpose | Key Fields |
 |-------|---------|-----------|
-| `profiles` | User profiles (extends auth.users) | username, display_name, avatar_url, bio, referral_code, referral_pro_until, is_bot (planned) |
+| `profiles` | User profiles (extends auth.users) | username, display_name, avatar_url, bio, referral_code, referral_pro_until, is_bot |
 | `posts` | All aggregated content | source (x/user/rss/youtube/wire), content, category, is_breaking, upvote_count, comment_count |
-| `comments` | Threaded comments | post_id, user_id, parent_id, content, upvote_count |
+| `comments` | Threaded comments | post_id, user_id, parent_id, content, upvote_count, edited_at |
 | `votes` | Polymorphic votes | target_type (post/comment), target_id, value (+1/-1) |
 | `forums` | 6 pre-seeded forums | name, slug, description |
 | `forum_threads` | Discussion threads | forum_id, title, content, is_pinned |
@@ -230,20 +312,34 @@ Three client factories for different contexts:
 | Table | Purpose | Access |
 |-------|---------|--------|
 | `customers` | Stripe customer mapping | Owner read, service role write |
-| `subscriptions` | Subscription tracking | Owner read, service role write |
-| `email_preferences` | Per-user notification settings | Owner read/write |
+| `subscriptions` | Subscription tracking (Stripe + IAP) | Owner read, service role write. Has `source` column: stripe/iap_apple/iap_google |
+| `email_preferences` | Per-user email notification settings | Owner read/write |
 | `keyword_alerts` | Intelligence keyword monitors | Owner CRUD |
 | `referrals` | Referral tracking | Owner read |
 | `analytics_events` | Internal event tracking | Service role only |
 | `newsletter_subscribers` | Free newsletter emails | Service role only |
+| `affiliate_commissions` | Creator affiliate commissions (20% Intelligence) | Owner read, service role write |
+| `iap_receipts` | Apple/Google purchase receipt validation | Owner read, service role write |
 
-### Planned Tables (WIRE AI)
+### WIRE AI Tables
 
-| Table | Purpose |
-|-------|---------|
-| `wire_interactions` | Ask WIRE usage tracking + rate limiting |
-| `wire_columns` | Weekly column drafts for admin review |
-| `wire_config` | Runtime configuration for WIRE behavior |
+| Table | Purpose | Access |
+|-------|---------|--------|
+| `wire_interactions` | Ask WIRE usage tracking + rate limiting | Owner read, service role insert |
+| `wire_columns` | Weekly column drafts for admin review | Service role only |
+| `wire_config` | Runtime configuration for WIRE behavior (14 keys) | Public read, service role write |
+
+### Mobile Ecosystem Tables
+
+| Table | Purpose | Access |
+|-------|---------|--------|
+| `device_tokens` | FCM/APNs push notification token registration | Owner CRUD |
+| `bookmarks` | User saved posts (unique per user+post) | Owner CRUD |
+| `reports` | Content moderation reports (required by app stores) | Owner insert/read, service role for admin review |
+| `blocked_users` | User-to-user blocks (unique per pair, no self-block) | Owner CRUD |
+| `notification_preferences` | Per-user push notification settings (5 toggles) | Owner read/upsert |
+| `notifications` | Notification inbox with read/unread tracking | Owner read/update/delete, service role insert |
+| `app_config` | App version checks, feature flags, maintenance mode | Public read, service role write |
 
 ### Database Triggers
 
@@ -259,11 +355,13 @@ Three client factories for different contexts:
 | Service | Purpose | Cost |
 |---------|---------|------|
 | Vercel | Hosting, serverless functions | Free tier (currently) |
-| Supabase | Postgres database, auth, RLS | Free tier (currently) |
-| Stripe | Payment processing | 2.9% + $0.30 per transaction |
+| Supabase | Postgres database, auth, RLS, storage | Free tier (currently) |
+| Stripe | Payment processing (web + mobile checkout) | 2.9% + $0.30 per transaction |
 | Gmail SMTP | Email delivery | Free (500/day limit) |
 | GitHub Actions | Cron job execution | Free (2000 min/month) |
-| Anthropic (planned) | Claude API for WIRE AI | ~$5.42/month at Level 2 |
+| Anthropic | Claude API for WIRE AI (Haiku + Sonnet) | ~$5.42/month at Level 2 |
+| Apple App Store | iOS app distribution + IAP | 15-30% commission |
+| Google Play Store | Android app distribution + IAP | 15-30% commission |
 
 ---
 
@@ -271,7 +369,11 @@ Three client factories for different contexts:
 
 - **RLS everywhere** — Every table has Row Level Security policies
 - **Server-side price resolution** — Stripe Price IDs never sent from client
+- **Bearer token auth for mobile** — `createMobileClient()` extracts and validates JWT from `Authorization` header
 - **Cron authentication** — All cron endpoints check `Authorization: Bearer <CRON_SECRET>`
 - **Admin hardcoded UUID** — Admin pages check against owner's UUID
-- **Service role isolation** — Only used in webhooks, cron, and referral tracking
-- **Cookie-based auth** — Supabase session stored in httpOnly cookies via middleware
+- **Service role isolation** — Only used in webhooks, cron, IAP validation, WIRE AI, and referral tracking
+- **Cookie-based auth for web** — Supabase session stored in httpOnly cookies via middleware
+- **Account deletion** — Requires explicit `"DELETE"` confirmation string
+- **Password reset** — Never reveals whether an email exists (prevents enumeration)
+- **Self-action prevention** — Cannot self-follow, self-block, or self-refer

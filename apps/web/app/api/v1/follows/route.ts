@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createMobileClient as createClient } from "@/lib/supabase/mobile";
 
 export async function POST(request: NextRequest) {
   try {

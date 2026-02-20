@@ -213,9 +213,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ comment, mode: aiResponse.mode });
   } catch (err) {
-    console.error("Unexpected error in POST /api/wire/ask:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Unexpected error in POST /api/wire/ask:", message);
     return NextResponse.json(
-      { error: "Internal server error" },
+      { error: "Internal server error", detail: message },
       { status: 500 }
     );
   }

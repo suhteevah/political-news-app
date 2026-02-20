@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createMobileClient as createClient } from "@/lib/supabase/mobile";
 import { getUserPlan } from "@/lib/get-user-plan";
 
 export async function GET() {
@@ -14,7 +14,7 @@ export async function GET() {
     }
 
     // Get plan via existing helper
-    const plan = await getUserPlan(user.id);
+    const plan = await getUserPlan(user.id, supabase);
 
     // Fetch the raw subscription row (most recent active/trialing)
     const { data: subscription } = await supabase

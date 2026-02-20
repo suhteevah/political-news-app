@@ -2,6 +2,7 @@ import type { Post } from "@repo/shared";
 import { VoteButton } from "./vote-button";
 import { EmbedLinkButton } from "./embed-link-button";
 import { WireBadge } from "./wire-badge";
+import { YouTubeInlinePlayer, getYouTubeVideoId } from "./video-embed";
 import Link from "next/link";
 
 export function PostCard({ post }: { post: Post }) {
@@ -13,6 +14,11 @@ export function PostCard({ post }: { post: Post }) {
     : isWire
       ? "border-amber-800/40 bg-amber-950/10 hover:border-amber-700/50"
       : "border-gray-800 hover:border-gray-700";
+
+  const youtubeVideoId =
+    post.source === "youtube" && post.external_url
+      ? getYouTubeVideoId(post.external_url)
+      : null;
 
   return (
     <article className={`border rounded-xl p-4 transition-colors ${cardClasses}`}>
@@ -38,7 +44,7 @@ export function PostCard({ post }: { post: Post }) {
             <img
               src={post.x_author_avatar}
               alt=""
-              className="w-10 h-10 rounded-full"
+              className="w-10 h-10 rounded-full shrink-0"
             />
           )
         )}
@@ -63,7 +69,18 @@ export function PostCard({ post }: { post: Post }) {
             </span>
           </div>
           <p className="mt-2 text-gray-200 whitespace-pre-wrap">{post.content}</p>
-          {post.media_urls.length > 0 && (
+
+          {/* YouTube: inline player (thumbnail → click → plays in place) */}
+          {youtubeVideoId && post.external_url && (
+            <YouTubeInlinePlayer
+              videoId={youtubeVideoId}
+              thumbnailUrl={post.media_urls[0]}
+              externalUrl={post.external_url}
+            />
+          )}
+
+          {/* Non-YouTube media: image grid */}
+          {!youtubeVideoId && post.media_urls.length > 0 && (
             <div className="mt-3 grid gap-2 grid-cols-2">
               {post.media_urls.slice(0, 4).map((url, i) => (
                 <img
@@ -75,6 +92,7 @@ export function PostCard({ post }: { post: Post }) {
               ))}
             </div>
           )}
+
           <div className="flex items-center gap-6 mt-3">
             <VoteButton targetType="post" targetId={post.id} initialCount={post.upvote_count} />
             <Link

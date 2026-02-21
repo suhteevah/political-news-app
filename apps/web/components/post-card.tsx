@@ -1,6 +1,7 @@
 import type { Post } from "@repo/shared";
 import { VoteButton } from "./vote-button";
 import { EmbedLinkButton } from "./embed-link-button";
+import { TweetVideoPlayer, ViewOnXButton } from "./tweet-embed";
 import { WireBadge } from "./wire-badge";
 import { YouTubeInlinePlayer, getYouTubeVideoId } from "./video-embed";
 import Link from "next/link";
@@ -15,10 +16,23 @@ export function PostCard({ post }: { post: Post }) {
       ? "border-amber-800/40 bg-amber-950/10 hover:border-amber-700/50"
       : "border-gray-800 hover:border-gray-700";
 
-  const youtubeVideoId =
-    post.source === "youtube" && post.external_url
-      ? getYouTubeVideoId(post.external_url)
-      : null;
+  // YouTube embed: from external_url (youtube source) or auto-detect in content (user/wire posts)
+  let youtubeVideoId: string | null = null;
+  let youtubeExternalUrl: string | null = null;
+
+  if (post.source === "youtube" && post.external_url) {
+    youtubeVideoId = getYouTubeVideoId(post.external_url);
+    youtubeExternalUrl = post.external_url;
+  } else if (post.source === "user" || post.source === "wire") {
+    // Auto-detect YouTube links in user/wire post content
+    const ytMatch = post.content.match(
+      /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]+|youtu\.be\/[\w-]+)/
+    );
+    if (ytMatch) {
+      youtubeVideoId = getYouTubeVideoId(ytMatch[0]);
+      youtubeExternalUrl = ytMatch[0];
+    }
+  }
 
   return (
     <article className={`border rounded-xl p-4 transition-colors ${cardClasses}`}>
@@ -71,16 +85,25 @@ export function PostCard({ post }: { post: Post }) {
           <p className="mt-2 text-gray-200 whitespace-pre-wrap">{post.content}</p>
 
           {/* YouTube: inline player (thumbnail → click → plays in place) */}
-          {youtubeVideoId && post.external_url && (
+          {youtubeVideoId && youtubeExternalUrl && (
             <YouTubeInlinePlayer
               videoId={youtubeVideoId}
-              thumbnailUrl={post.media_urls[0]}
-              externalUrl={post.external_url}
+              thumbnailUrl={post.source === "youtube" ? post.media_urls[0] : undefined}
+              externalUrl={youtubeExternalUrl}
             />
           )}
 
-          {/* Non-YouTube media: image grid */}
-          {!youtubeVideoId && post.media_urls.length > 0 && (
+          {/* X/Twitter video: inline video player */}
+          {!youtubeVideoId && post.video_url && (
+            <TweetVideoPlayer
+              videoUrl={post.video_url}
+              thumbnailUrl={post.media_urls[0]}
+              tweetUrl={post.external_url || `https://x.com/${post.x_author_handle}/status/${post.x_tweet_id}`}
+            />
+          )}
+
+          {/* Non-video media: image grid */}
+          {!youtubeVideoId && !post.video_url && post.media_urls.length > 0 && (
             <div className="mt-3 grid gap-2 grid-cols-2">
               {post.media_urls.slice(0, 4).map((url, i) => (
                 <img
@@ -105,7 +128,10 @@ export function PostCard({ post }: { post: Post }) {
               {post.comment_count}
             </Link>
             {post.source === "x" && post.x_tweet_id && post.x_author_handle && (
-              <EmbedLinkButton handle={post.x_author_handle} tweetId={post.x_tweet_id} />
+              <>
+                <ViewOnXButton handle={post.x_author_handle} tweetId={post.x_tweet_id} />
+                <EmbedLinkButton handle={post.x_author_handle} tweetId={post.x_tweet_id} />
+              </>
             )}
           </div>
         </div>

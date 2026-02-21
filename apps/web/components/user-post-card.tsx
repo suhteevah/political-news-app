@@ -1,5 +1,6 @@
 import { VoteButton } from "./vote-button";
 import { ProBadge } from "./pro-badge";
+import { YouTubeInlinePlayer, getYouTubeVideoId } from "./video-embed";
 
 interface UserPostWithProfile {
   id: string;
@@ -16,6 +17,25 @@ interface UserPostWithProfile {
   };
 }
 
+/** Extract the first YouTube URL from text content */
+function extractYouTubeUrl(text: string): string | null {
+  const match = text.match(
+    /https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=[\w-]+|youtu\.be\/[\w-]+)/
+  );
+  return match ? match[0] : null;
+}
+
+/** Extract the first X/Twitter URL from text content */
+function extractTweetUrl(
+  text: string
+): { handle: string; tweetId: string; url: string } | null {
+  const match = text.match(
+    /https?:\/\/(?:(?:www|mobile)\.)?(?:twitter\.com|x\.com)\/([\w]+)\/status\/(\d+)/
+  );
+  if (!match) return null;
+  return { handle: match[1], tweetId: match[2], url: match[0] };
+}
+
 export function UserPostCard({
   post,
   userPlan,
@@ -25,6 +45,13 @@ export function UserPostCard({
 }) {
   const timeAgo = getTimeAgo(new Date(post.created_at));
   const images = post.media_urls?.filter(Boolean) ?? [];
+
+  // Auto-detect YouTube link in post content
+  const youtubeUrl = extractYouTubeUrl(post.content);
+  const youtubeVideoId = youtubeUrl ? getYouTubeVideoId(youtubeUrl) : null;
+
+  // Auto-detect X/Twitter link in post content
+  const tweetLink = extractTweetUrl(post.content);
 
   return (
     <article className="border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors">
@@ -41,6 +68,30 @@ export function UserPostCard({
             <span className="text-gray-500">{timeAgo}</span>
           </div>
           <p className="mt-2 text-gray-200 whitespace-pre-wrap">{post.content}</p>
+
+          {/* YouTube auto-embed from link in content */}
+          {youtubeVideoId && youtubeUrl && (
+            <YouTubeInlinePlayer
+              videoId={youtubeVideoId}
+              externalUrl={youtubeUrl}
+            />
+          )}
+
+          {/* X/Twitter link preview */}
+          {!youtubeVideoId && tweetLink && (
+            <a
+              href={tweetLink.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-300 hover:bg-gray-800 hover:text-white transition-colors"
+            >
+              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+              <span>View post on X</span>
+              <span className="text-gray-500">@{tweetLink.handle}</span>
+            </a>
+          )}
 
           {/* Image grid */}
           {images.length > 0 && (

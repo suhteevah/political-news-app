@@ -3,11 +3,12 @@ import { createMobileClient, getMobileUser } from "@/lib/supabase/mobile";
 
 export async function POST(request: NextRequest) {
   try {
-    const supabase = createMobileClient(request);
-    const user = await getMobileUser(supabase);
+    const user = await getMobileUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const supabase = await createMobileClient();
 
     const body = await request.json();
     const { token, platform, app_version } = body;
@@ -61,11 +62,12 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = createMobileClient(request);
-    const user = await getMobileUser(supabase);
+    const user = await getMobileUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const supabase = await createMobileClient();
 
     const body = await request.json();
     const { token } = body;

@@ -39,7 +39,8 @@ export async function GET() {
 
     // Flatten the profile join into the response
     const result = (blocked ?? []).map((entry) => {
-      const profile = entry.profile as
+      const rawProfile = entry.profile as unknown;
+      const profile = (Array.isArray(rawProfile) ? rawProfile[0] : rawProfile) as
         | { username: string | null; avatar_url: string | null }
         | null;
       return {

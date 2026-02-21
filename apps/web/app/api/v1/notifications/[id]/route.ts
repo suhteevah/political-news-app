@@ -8,11 +8,12 @@ export async function DELETE(
   try {
     const { id } = await params;
 
-    const supabase = createMobileClient(request);
-    const user = await getMobileUser(supabase);
+    const user = await getMobileUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const supabase = await createMobileClient();
 
     if (!id) {
       return NextResponse.json(

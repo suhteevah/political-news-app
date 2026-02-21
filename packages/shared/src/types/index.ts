@@ -17,6 +17,8 @@ export interface Post {
   x_author_avatar: string | null;
   content: string;
   media_urls: string[];
+  /** Direct MP4 video URL for X/Twitter video tweets */
+  video_url?: string | null;
   category: string;
   created_at: string;
   upvote_count: number;

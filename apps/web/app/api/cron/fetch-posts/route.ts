@@ -44,6 +44,8 @@ export async function GET(request: Request) {
               x_author_avatar: tweet.authorAvatar,
               content: tweet.content,
               media_urls: tweet.mediaUrls,
+              video_url: tweet.videoUrl,
+              external_url: `https://x.com/${tweet.authorHandle}/status/${tweet.tweetId}`,
               category: source.category,
               created_at: tweet.createdAt,
             },

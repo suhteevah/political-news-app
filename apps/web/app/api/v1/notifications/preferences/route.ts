@@ -9,13 +9,14 @@ const DEFAULT_PREFERENCES = {
   daily_digest: false,
 };
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const supabase = createMobileClient(request);
-    const user = await getMobileUser(supabase);
+    const user = await getMobileUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const supabase = await createMobileClient();
 
     const { data, error } = await supabase
       .from("notification_preferences")
@@ -50,11 +51,12 @@ export async function GET(request: NextRequest) {
 
 export async function PUT(request: NextRequest) {
   try {
-    const supabase = createMobileClient(request);
-    const user = await getMobileUser(supabase);
+    const user = await getMobileUser();
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    const supabase = await createMobileClient();
 
     const body = await request.json();
     const {

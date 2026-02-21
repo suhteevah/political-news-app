@@ -14,7 +14,7 @@ export async function GET(
     const { data: post, error: postError } = await supabase
       .from("posts")
       .select(
-        "id, content, x_author_name, x_author_handle, x_tweet_id, category, created_at, is_breaking, upvote_count, comment_count, external_url, source, source_id"
+        "id, content, x_author_name, x_author_handle, x_author_avatar, x_tweet_id, category, created_at, is_breaking, upvote_count, comment_count, external_url, source, source_id, media_urls, video_url"
       )
       .eq("id", id)
       .single();

@@ -135,6 +135,8 @@ export interface ScrapedTweet {
   authorAvatar: string | null;
   content: string;
   mediaUrls: string[];
+  /** MP4 video URL (best quality) if the tweet contains video */
+  videoUrl: string | null;
   createdAt: string;
 }
 
@@ -268,8 +270,9 @@ async function fetchViaSyndication(
       const text = tweet.full_text || tweet.text || "";
       if (!text) continue;
 
-      // Collect media URLs
+      // Collect media URLs and video URL
       const mediaUrls: string[] = [];
+      let videoUrl: string | null = null;
       const allMedia = [
         ...(tweet.extended_entities?.media ?? []),
         ...(tweet.entities?.media ?? []),
@@ -277,10 +280,29 @@ async function fetchViaSyndication(
       const seenMediaUrls = new Set<string>();
 
       for (const m of allMedia) {
-        const url = m.media_url_https || m.url || "";
-        if (url && !seenMediaUrls.has(url)) {
-          seenMediaUrls.add(url);
-          mediaUrls.push(url);
+        // Extract best quality MP4 video URL
+        if (
+          (m.type === "video" || m.type === "animated_gif") &&
+          m.video_info?.variants
+        ) {
+          const mp4s = m.video_info.variants
+            .filter((v) => v.content_type === "video/mp4" && v.bitrate != null)
+            .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
+          if (mp4s.length > 0) {
+            videoUrl = mp4s[0].url;
+          }
+          // Store thumbnail for the video
+          const thumb = m.media_url_https || m.url || "";
+          if (thumb && !seenMediaUrls.has(thumb)) {
+            seenMediaUrls.add(thumb);
+            mediaUrls.push(thumb);
+          }
+        } else {
+          const url = m.media_url_https || m.url || "";
+          if (url && !seenMediaUrls.has(url)) {
+            seenMediaUrls.add(url);
+            mediaUrls.push(url);
+          }
         }
       }
 
@@ -293,6 +315,7 @@ async function fetchViaSyndication(
           : null,
         content: text.replace(/https:\/\/t\.co\/\w+$/g, "").trim(),
         mediaUrls,
+        videoUrl,
         createdAt: tweet.created_at
           ? new Date(tweet.created_at).toISOString()
           : new Date().toISOString(),
@@ -331,6 +354,7 @@ async function fetchTweetViaFxTwitter(
 
     const t = data.tweet;
     const mediaUrls: string[] = [];
+    let videoUrl: string | null = null;
 
     if (t.media?.photos) {
       for (const p of t.media.photos) {
@@ -341,6 +365,8 @@ async function fetchTweetViaFxTwitter(
     if (t.media?.videos) {
       for (const v of t.media.videos) {
         if (v.thumbnail_url) mediaUrls.push(v.thumbnail_url);
+        // FxTwitter provides direct MP4 URLs for videos
+        if (v.url) videoUrl = v.url;
       }
     }
 
@@ -351,6 +377,7 @@ async function fetchTweetViaFxTwitter(
       authorAvatar: t.author.avatar_url ?? null,
       content: t.text,
       mediaUrls,
+      videoUrl,
       createdAt: new Date(t.created_timestamp * 1000).toISOString(),
     };
   } catch (err) {

@@ -42,8 +42,16 @@ export async function POST(request: NextRequest) {
     const successUrl = success_url || `${origin}/pricing?donated=true`;
     const cancelUrl = cancel_url || `${origin}/pricing?canceled=true`;
 
-    // Build checkout session params
-    const sessionParams: Parameters<typeof stripe.checkout.sessions.create>[0] = {
+    // Check for existing Stripe customer
+    const supabase = await createMobileClient();
+    const { data: customer } = await supabase
+      .from("customers")
+      .select("stripe_customer_id")
+      .eq("user_id", user.id)
+      .single();
+
+    // Build checkout session
+    const session = await stripe.checkout.sessions.create({
       line_items: [
         {
           price_data: {
@@ -60,26 +68,13 @@ export async function POST(request: NextRequest) {
       mode: "payment",
       success_url: successUrl,
       cancel_url: cancelUrl,
+      customer: customer?.stripe_customer_id || undefined,
       metadata: {
         user_id: user.id,
         type: "donation",
         source: "mobile",
       },
-    };
-
-    // Attach existing Stripe customer if the user has one
-    const supabase = await createMobileClient();
-    const { data: customer } = await supabase
-      .from("customers")
-      .select("stripe_customer_id")
-      .eq("user_id", user.id)
-      .single();
-
-    if (customer?.stripe_customer_id) {
-      sessionParams.customer = customer.stripe_customer_id;
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionParams);
+    });
 
     return NextResponse.json({ url: session.url });
   } catch (err) {

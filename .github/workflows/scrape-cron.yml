@@ -7,11 +7,37 @@ on:
   workflow_dispatch: # Allow manual trigger
 
 jobs:
-  scrape:
+  scrape-twitter:
+    name: Scrape X/Twitter
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Trigger scrape endpoint
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install @the-convocation/twitter-scraper tough-cookie @supabase/supabase-js
+
+      - name: Run X/Twitter scraper
+        env:
+          TWITTER_USERNAME: ${{ secrets.TWITTER_USERNAME }}
+          TWITTER_PASSWORD: ${{ secrets.TWITTER_PASSWORD }}
+          TWITTER_EMAIL: ${{ secrets.TWITTER_EMAIL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/scrape.mjs
+
+  scrape-rss:
+    name: Scrape RSS/YouTube
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger RSS scrape endpoint
         run: |
           response=$(curl -s -w "\n%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
@@ -24,6 +50,5 @@ jobs:
           echo "Response: $body"
 
           if [ "$http_code" != "200" ]; then
-            echo "::error::Scrape failed with status $http_code"
-            exit 1
+            echo "::warning::RSS scrape returned status $http_code"
           fi

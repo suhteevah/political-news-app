@@ -1,131 +1,24 @@
 /**
- * Multi-strategy Twitter/X scraper — replaces the official X API v2.
+ * Twitter/X scraper — uses @the-convocation/twitter-scraper with auth.
  *
- * Strategy chain:
- *   1. Twitter Syndication API — discovers tweets via public embed endpoint
- *   2. FxTwitter API (api.fxtwitter.com) — enrichment fallback (free, no auth)
- *   3. SearXNG (optional) — additional discovery via web search
+ * Strategy:
+ *   1. Attempt authenticated fetch via Twitter's internal GraphQL API
+ *   2. Cookie caching in Supabase app_config to avoid re-login each cron run
+ *   3. FxTwitter fallback for individual tweet enrichment
  *
- * Requirements:
- *   - SEARXNG_URL env var (optional — public instance URL)
- *
- * No npm dependencies — uses native fetch, AbortController, and regex.
+ * Required env vars:
+ *   - TWITTER_USERNAME
+ *   - TWITTER_PASSWORD
+ *   - TWITTER_EMAIL (optional, for verification prompts)
  */
+
+import { Scraper, Tweet, Profile } from "@the-convocation/twitter-scraper";
+import { Cookie } from "tough-cookie";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ============================================================
 // Types
 // ============================================================
-
-/** Twitter Syndication timeline entry */
-interface SyndicationEntry {
-  type: string;
-  entry_id: string;
-  sort_index: string;
-  content?: {
-    tweet?: SyndicationTweet;
-  };
-}
-
-interface SyndicationTweet {
-  id_str: string;
-  full_text?: string;
-  text?: string;
-  created_at: string;
-  user?: {
-    id_str: string;
-    name: string;
-    screen_name: string;
-    profile_image_url_https: string;
-  };
-  entities?: {
-    media?: SyndicationMedia[];
-  };
-  extended_entities?: {
-    media?: SyndicationMedia[];
-  };
-}
-
-interface SyndicationMedia {
-  type: string;
-  media_url_https?: string;
-  url?: string;
-  video_info?: {
-    variants?: Array<{
-      url: string;
-      content_type: string;
-      bitrate?: number;
-    }>;
-  };
-}
-
-/** FxTwitter status response */
-interface FxTweetResponse {
-  code: number;
-  message: string;
-  tweet?: FxTweet;
-}
-
-interface FxTweet {
-  id: string;
-  url: string;
-  text: string;
-  created_at: string;
-  created_timestamp: number;
-  likes: number;
-  retweets: number;
-  replies: number;
-  views: number | null;
-  lang: string | null;
-  possibly_sensitive: boolean;
-  author: FxAuthor;
-  media?: FxMedia;
-  quote?: FxTweet;
-}
-
-interface FxAuthor {
-  id: string;
-  name: string;
-  screen_name: string;
-  avatar_url: string;
-  banner_url?: string;
-}
-
-interface FxMedia {
-  photos?: FxPhoto[];
-  videos?: FxVideo[];
-  all?: Array<FxPhoto | FxVideo>;
-}
-
-interface FxPhoto {
-  type: "photo";
-  url: string;
-  width: number;
-  height: number;
-  altText: string;
-}
-
-interface FxVideo {
-  type: "video" | "gif";
-  url: string;
-  thumbnail_url: string;
-  width: number;
-  height: number;
-  duration: number;
-}
-
-/** SearXNG JSON response */
-interface SearXNGResponse {
-  query: string;
-  results: SearXNGResult[];
-}
-
-interface SearXNGResult {
-  title: string;
-  url: string;
-  content: string;
-  engine: string;
-  publishedDate?: string;
-}
 
 /** Normalized tweet data — maps directly to the posts table */
 export interface ScrapedTweet {
@@ -144,50 +37,302 @@ export interface ScrapedTweet {
 // Config
 // ============================================================
 
-const FXTWITTER_BASE = "https://api.fxtwitter.com";
-const SYNDICATION_BASE =
-  "https://syndication.twitter.com/srv/timeline-profile/screen-name";
-const SEARXNG_URL = process.env.SEARXNG_URL ?? "";
-
-const BOT_UA = "TheRightWire/1.0 (news-aggregator)";
-const BROWSER_UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const COOKIE_CONFIG_KEY = "twitter_scraper_cookies";
 
 // ============================================================
-// Utilities
+// Supabase admin client (for cookie storage)
 // ============================================================
 
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function getAdminClient(): SupabaseClient {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+}
 
-/** Fetch with timeout using AbortController */
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit = {},
-  timeoutMs = 10_000
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+// ============================================================
+// Cookie persistence via Supabase app_config
+// ============================================================
+
+async function loadCookies(): Promise<string | null> {
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+    const supabase = getAdminClient();
+    const { data } = await supabase
+      .from("app_config")
+      .select("value")
+      .eq("key", COOKIE_CONFIG_KEY)
+      .maybeSingle();
+    if (data?.value) {
+      return typeof data.value === "string"
+        ? data.value
+        : JSON.stringify(data.value);
+    }
+  } catch (err) {
+    console.warn("[scraper] Failed to load cookies:", err);
+  }
+  return null;
+}
+
+async function saveCookies(cookieStrings: string[]): Promise<void> {
+  try {
+    const supabase = getAdminClient();
+    await supabase.from("app_config").upsert(
+      {
+        key: COOKIE_CONFIG_KEY,
+        value: JSON.stringify(cookieStrings),
+      },
+      { onConflict: "key" }
+    );
+    console.log("[scraper] Cookies saved to app_config");
+  } catch (err) {
+    console.warn("[scraper] Failed to save cookies:", err);
   }
 }
 
-/** Extract tweet ID and handle from a twitter.com / x.com URL */
-const TWEET_URL_RE =
-  /(?:https?:\/\/)?(?:(?:www|mobile)\.)?(?:twitter\.com|x\.com)\/([a-zA-Z0-9_]+)\/status\/(\d+)/;
+// ============================================================
+// Scraper singleton (reused within a single cron invocation)
+// ============================================================
 
-function extractTweetFromUrl(
-  url: string
-): { handle: string; tweetId: string } | null {
-  const m = url.match(TWEET_URL_RE);
-  return m ? { handle: m[1], tweetId: m[2] } : null;
+let _scraper: Scraper | null = null;
+let _scraperReady = false;
+
+async function getScraper(): Promise<Scraper> {
+  if (_scraper && _scraperReady) return _scraper;
+
+  const scraper = new Scraper({
+    experimental: {
+      xClientTransactionId: true,
+      xpff: true,
+    },
+  });
+  _scraper = scraper;
+
+  // Try restoring cookies from DB first
+  const savedCookies = await loadCookies();
+  if (savedCookies) {
+    try {
+      const cookieArray: string[] = JSON.parse(savedCookies);
+      const parsed = cookieArray
+        .map((c) => Cookie.parse(c))
+        .filter((c): c is Cookie => c != null);
+
+      if (parsed.length > 0) {
+        await scraper.setCookies(parsed);
+
+        if (await scraper.isLoggedIn()) {
+          console.log("[scraper] Restored session from cached cookies");
+          _scraperReady = true;
+          return scraper;
+        }
+        console.log("[scraper] Cached cookies expired, re-logging in");
+      }
+    } catch (err) {
+      console.warn("[scraper] Cookie restore failed:", err);
+    }
+  }
+
+  // Fresh login
+  const username = process.env.TWITTER_USERNAME;
+  const password = process.env.TWITTER_PASSWORD;
+  const email = process.env.TWITTER_EMAIL;
+
+  if (!username || !password) {
+    throw new Error(
+      "[scraper] TWITTER_USERNAME and TWITTER_PASSWORD env vars required"
+    );
+  }
+
+  console.log(`[scraper] Logging in as @${username}...`);
+  await scraper.login(username, password, email);
+
+  if (!(await scraper.isLoggedIn())) {
+    throw new Error("[scraper] Login failed — check credentials");
+  }
+
+  console.log("[scraper] Login successful, caching cookies");
+
+  // Save cookies for next run
+  const cookies = await scraper.getCookies();
+  const cookieStrings = cookies.map((c) => c.toString());
+  await saveCookies(cookieStrings);
+
+  _scraperReady = true;
+  return scraper;
+}
+
+// ============================================================
+// Tweet normalization
+// ============================================================
+
+function normalizeTweet(
+  tweet: Tweet,
+  avatarUrl: string | null
+): ScrapedTweet | null {
+  const id = tweet.id;
+  const text = tweet.text;
+  if (!id || !text) return null;
+
+  // Skip retweets — we want original content only
+  if (tweet.isRetweet) return null;
+
+  const mediaUrls: string[] = [];
+  let videoUrl: string | null = null;
+
+  // Extract photos
+  if (tweet.photos && tweet.photos.length > 0) {
+    for (const photo of tweet.photos) {
+      if (photo.url) mediaUrls.push(photo.url);
+    }
+  }
+
+  // Extract videos
+  if (tweet.videos && tweet.videos.length > 0) {
+    for (const video of tweet.videos) {
+      // The library provides preview/thumbnail as the video URL sometimes
+      // Look for the actual MP4 URL
+      if (video.url) {
+        videoUrl = video.url;
+      }
+      if (video.preview) {
+        mediaUrls.push(video.preview);
+      }
+    }
+  }
+
+  // Clean content: remove trailing t.co links
+  const cleanContent = text.replace(/\s*https:\/\/t\.co\/\w+$/g, "").trim();
+
+  return {
+    tweetId: id,
+    authorHandle: tweet.username ?? "",
+    authorName: tweet.name ?? tweet.username ?? "",
+    authorAvatar: avatarUrl,
+    content: cleanContent,
+    mediaUrls,
+    videoUrl,
+    createdAt: tweet.timeParsed
+      ? tweet.timeParsed.toISOString()
+      : new Date().toISOString(),
+  };
+}
+
+// ============================================================
+// Main Export — Fetch recent tweets for a handle
+// ============================================================
+
+// Profile avatar cache — avoids re-fetching the same profile within a cron run
+const _avatarCache = new Map<string, string | null>();
+
+export async function fetchRecentTweetsForHandle(
+  handle: string,
+  maxResults = 10
+): Promise<ScrapedTweet[]> {
+  try {
+    const scraper = await getScraper();
+    const results: ScrapedTweet[] = [];
+
+    // Fetch profile avatar (cached per cron run)
+    let avatarUrl: string | null = null;
+    if (_avatarCache.has(handle)) {
+      avatarUrl = _avatarCache.get(handle) ?? null;
+    } else {
+      try {
+        const profile: Profile = await scraper.getProfile(handle);
+        if (profile.avatar) {
+          // Get high-res avatar (remove _normal suffix, use _400x400)
+          avatarUrl = profile.avatar.replace("_normal", "_400x400");
+        }
+      } catch (err) {
+        console.warn(`[scraper] Failed to fetch profile for @${handle}:`, err);
+      }
+      _avatarCache.set(handle, avatarUrl);
+    }
+
+    // getTweets returns an AsyncGenerator
+    const tweetsIter = scraper.getTweets(handle, maxResults);
+
+    for await (const tweet of tweetsIter) {
+      const normalized = normalizeTweet(tweet, avatarUrl);
+      if (normalized) {
+        results.push(normalized);
+      }
+      if (results.length >= maxResults) break;
+    }
+
+    if (results.length > 0) {
+      console.log(
+        `[scraper] Got ${results.length} tweets for @${handle}`
+      );
+    } else {
+      console.warn(`[scraper] No tweets found for @${handle}`);
+    }
+
+    return results;
+  } catch (err) {
+    console.error(
+      `[scraper] Failed for @${handle}:`,
+      err instanceof Error ? err.message : err
+    );
+    return [];
+  }
 }
 
 /**
+ * Diagnostic: test scraper login and fetch one handle. Returns detailed status.
+ */
+export async function diagnoseScraper(handle = "Breaking911"): Promise<{
+  loggedIn: boolean;
+  loginMethod: string;
+  tweetCount: number;
+  firstTweet: string | null;
+  avatarUrl: string | null;
+  error: string | null;
+}> {
+  const result = {
+    loggedIn: false,
+    loginMethod: "unknown",
+    tweetCount: 0,
+    firstTweet: null as string | null,
+    avatarUrl: null as string | null,
+    error: null as string | null,
+  };
+
+  try {
+    const scraper = await getScraper();
+    result.loggedIn = await scraper.isLoggedIn();
+    result.loginMethod = result.loggedIn ? "authenticated" : "guest";
+
+    // Try fetching profile
+    try {
+      const profile = await scraper.getProfile(handle);
+      result.avatarUrl = profile.avatar ?? null;
+    } catch (err) {
+      result.error = `Profile fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    // Try fetching tweets
+    const tweets: ScrapedTweet[] = [];
+    const iter = scraper.getTweets(handle, 3);
+    for await (const tweet of iter) {
+      const normalized = normalizeTweet(tweet, result.avatarUrl);
+      if (normalized) tweets.push(normalized);
+      if (tweets.length >= 3) break;
+    }
+    result.tweetCount = tweets.length;
+    result.firstTweet = tweets[0]?.content?.substring(0, 100) ?? null;
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : String(err);
+  }
+
+  return result;
+}
+
+// ============================================================
+// Utility exports
+// ============================================================
+
+/**
  * Transform a twitter/x URL into a vxtwitter/fixvx URL for embeddable video.
- * Useful for generating video embed URLs.
  */
 export function toVideoEmbedUrl(tweetUrl: string): string {
   return tweetUrl
@@ -195,291 +340,10 @@ export function toVideoEmbedUrl(tweetUrl: string): string {
     .replace("x.com", "fixvx.com");
 }
 
-// ============================================================
-// Layer 1: Twitter Syndication API — Primary Discovery
-// ============================================================
-
-async function fetchViaSyndication(
-  handle: string,
-  maxResults: number
-): Promise<ScrapedTweet[]> {
-  try {
-    const res = await fetchWithTimeout(
-      `${SYNDICATION_BASE}/${handle}`,
-      {
-        headers: {
-          "User-Agent": BROWSER_UA,
-          Accept: "text/html",
-        },
-      },
-      15_000
-    );
-
-    if (!res.ok) {
-      console.warn(
-        `Syndication returned ${res.status} for @${handle}`
-      );
-      return [];
-    }
-
-    const html = await res.text();
-
-    // Extract __NEXT_DATA__ JSON from the SSR HTML
-    const match = html.match(
-      /<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/
-    );
-    if (!match) {
-      console.warn(`No __NEXT_DATA__ found in syndication response for @${handle}`);
-      return [];
-    }
-
-    const data = JSON.parse(match[1]);
-    const entries: SyndicationEntry[] =
-      data.props?.pageProps?.timeline?.entries ?? [];
-
-    if (entries.length === 0) {
-      console.warn(`Syndication returned 0 entries for @${handle}`);
-      return [];
-    }
-
-    console.log(
-      `Syndication found ${entries.length} entries for @${handle}`
-    );
-
-    const results: ScrapedTweet[] = [];
-
-    // Filter to tweet entries only (skip tombstones, ads, etc.)
-    // Sort by sort_index descending (most recent first)
-    const tweetEntries = entries
-      .filter(
-        (e) =>
-          e.type === "tweet" &&
-          e.content?.tweet?.user?.screen_name?.toLowerCase() ===
-            handle.toLowerCase()
-      )
-      .sort((a, b) => {
-        const aIdx = BigInt(a.sort_index || "0");
-        const bIdx = BigInt(b.sort_index || "0");
-        return bIdx > aIdx ? 1 : bIdx < aIdx ? -1 : 0;
-      });
-
-    for (const entry of tweetEntries.slice(0, maxResults)) {
-      const tweet = entry.content?.tweet;
-      if (!tweet) continue;
-
-      const text = tweet.full_text || tweet.text || "";
-      if (!text) continue;
-
-      // Collect media URLs and video URL
-      const mediaUrls: string[] = [];
-      let videoUrl: string | null = null;
-      const allMedia = [
-        ...(tweet.extended_entities?.media ?? []),
-        ...(tweet.entities?.media ?? []),
-      ];
-      const seenMediaUrls = new Set<string>();
-
-      for (const m of allMedia) {
-        // Extract best quality MP4 video URL
-        if (
-          (m.type === "video" || m.type === "animated_gif") &&
-          m.video_info?.variants
-        ) {
-          const mp4s = m.video_info.variants
-            .filter((v) => v.content_type === "video/mp4" && v.bitrate != null)
-            .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
-          if (mp4s.length > 0) {
-            videoUrl = mp4s[0].url;
-          }
-          // Store thumbnail for the video
-          const thumb = m.media_url_https || m.url || "";
-          if (thumb && !seenMediaUrls.has(thumb)) {
-            seenMediaUrls.add(thumb);
-            mediaUrls.push(thumb);
-          }
-        } else {
-          const url = m.media_url_https || m.url || "";
-          if (url && !seenMediaUrls.has(url)) {
-            seenMediaUrls.add(url);
-            mediaUrls.push(url);
-          }
-        }
-      }
-
-      results.push({
-        tweetId: tweet.id_str || entry.entry_id.replace("tweet-", ""),
-        authorHandle: tweet.user?.screen_name ?? handle,
-        authorName: tweet.user?.name ?? handle,
-        authorAvatar: tweet.user?.profile_image_url_https
-          ? tweet.user.profile_image_url_https.replace("_normal", "_400x400")
-          : null,
-        content: text.replace(/https:\/\/t\.co\/\w+$/g, "").trim(),
-        mediaUrls,
-        videoUrl,
-        createdAt: tweet.created_at
-          ? new Date(tweet.created_at).toISOString()
-          : new Date().toISOString(),
-      });
-    }
-
-    return results;
-  } catch (err) {
-    console.warn(
-      `Syndication failed for @${handle}:`,
-      err instanceof Error ? err.message : err
-    );
-    return [];
-  }
-}
-
-// ============================================================
-// Layer 2: FxTwitter — Enrichment / Fallback
-// ============================================================
-
-async function fetchTweetViaFxTwitter(
-  handle: string,
-  tweetId: string
-): Promise<ScrapedTweet | null> {
-  try {
-    const res = await fetchWithTimeout(
-      `${FXTWITTER_BASE}/${handle}/status/${tweetId}`,
-      { headers: { "User-Agent": BOT_UA } },
-      8_000
-    );
-
-    if (!res.ok) return null;
-
-    const data: FxTweetResponse = await res.json();
-    if (data.code !== 200 || !data.tweet) return null;
-
-    const t = data.tweet;
-    const mediaUrls: string[] = [];
-    let videoUrl: string | null = null;
-
-    if (t.media?.photos) {
-      for (const p of t.media.photos) {
-        mediaUrls.push(p.url);
-      }
-    }
-
-    if (t.media?.videos) {
-      for (const v of t.media.videos) {
-        if (v.thumbnail_url) mediaUrls.push(v.thumbnail_url);
-        // FxTwitter provides direct MP4 URLs for videos
-        if (v.url) videoUrl = v.url;
-      }
-    }
-
-    return {
-      tweetId: t.id,
-      authorHandle: t.author.screen_name,
-      authorName: t.author.name,
-      authorAvatar: t.author.avatar_url ?? null,
-      content: t.text,
-      mediaUrls,
-      videoUrl,
-      createdAt: new Date(t.created_timestamp * 1000).toISOString(),
-    };
-  } catch (err) {
-    console.warn(
-      `FxTwitter failed for ${handle}/${tweetId}:`,
-      err instanceof Error ? err.message : err
-    );
-    return null;
-  }
-}
-
-// ============================================================
-// Layer 3: SearXNG — Additional Discovery (Optional)
-// ============================================================
-
-async function searchSearXNG(handle: string): Promise<SearXNGResult[]> {
-  if (!SEARXNG_URL) return [];
-
-  try {
-    const params = new URLSearchParams({
-      q: `from:@${handle} site:x.com OR site:twitter.com`,
-      format: "json",
-      categories: "general",
-      time_range: "week",
-      pageno: "1",
-    });
-
-    const res = await fetchWithTimeout(
-      `${SEARXNG_URL}/search?${params}`,
-      { headers: { "User-Agent": BOT_UA, Accept: "application/json" } },
-      10_000
-    );
-
-    if (!res.ok) {
-      console.warn(`SearXNG returned ${res.status} for @${handle}`);
-      return [];
-    }
-
-    const data: SearXNGResponse = await res.json();
-    return data.results ?? [];
-  } catch (err) {
-    console.warn(
-      `SearXNG failed for @${handle}:`,
-      err instanceof Error ? err.message : err
-    );
-    return [];
-  }
-}
-
-// ============================================================
-// Main Export — Orchestrates the fallback chain
-// ============================================================
-
-export async function fetchRecentTweetsForHandle(
-  handle: string,
-  maxResults = 5
-): Promise<ScrapedTweet[]> {
-  const seenIds = new Set<string>();
-
-  // --- Layer 1: Twitter Syndication API (primary) ---
-  const syndicationResults = await fetchViaSyndication(handle, maxResults);
-
-  if (syndicationResults.length > 0) {
-    console.log(
-      `Got ${syndicationResults.length} tweets for @${handle} via Syndication`
-    );
-    return syndicationResults;
-  }
-
-  // --- Layer 2: SearXNG discovery + FxTwitter enrichment ---
-  const searxResults = await searchSearXNG(handle);
-  const discoveredTweets: Array<{ handle: string; tweetId: string }> = [];
-
-  for (const result of searxResults) {
-    const parsed = extractTweetFromUrl(result.url);
-    if (parsed && !seenIds.has(parsed.tweetId)) {
-      seenIds.add(parsed.tweetId);
-      discoveredTweets.push(parsed);
-    }
-    if (discoveredTweets.length >= maxResults) break;
-  }
-
-  if (discoveredTweets.length > 0) {
-    const results: ScrapedTweet[] = [];
-    for (const tweet of discoveredTweets.slice(0, maxResults)) {
-      const enriched = await fetchTweetViaFxTwitter(
-        tweet.handle,
-        tweet.tweetId
-      );
-      if (enriched) {
-        results.push(enriched);
-      }
-      await delay(500);
-    }
-    if (results.length > 0) {
-      console.log(
-        `Got ${results.length} tweets for @${handle} via SearXNG + FxTwitter`
-      );
-      return results;
-    }
-  }
-
-  console.warn(`All strategies failed for @${handle}`);
-  return [];
+/**
+ * Reset the scraper singleton (useful if cookies become invalid mid-run).
+ */
+export function resetScraper(): void {
+  _scraper = null;
+  _scraperReady = false;
 }

@@ -1,27 +1,23 @@
 #!/usr/bin/env node
 /**
- * Standalone Twitter/X scraper script.
- * Runs on GitHub Actions runners (not Vercel) to avoid Cloudflare IP blocks.
- *
- * RSS/YouTube scraping still happens via the Vercel endpoint since it
- * doesn't have IP blocking issues.
+ * Standalone Twitter/X scraper script (backup/testing).
+ * Uses Twitter's syndication API — no auth required, works from any IP.
  *
  * Required env vars:
- *   TWITTER_USERNAME, TWITTER_PASSWORD
- *   TWITTER_EMAIL (optional, for verification prompts)
  *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
  *
  * Usage:
  *   node scripts/scrape.mjs
  */
 
-import { Scraper } from "@the-convocation/twitter-scraper";
-import { Cookie } from "tough-cookie";
 import { createClient } from "@supabase/supabase-js";
 
 // ── Config ──────────────────────────────────────────────────────
 
-const COOKIE_CONFIG_KEY = "twitter_scraper_cookies";
+const SYNDICATION_BASE =
+  "https://syndication.twitter.com/srv/timeline-profile/screen-name";
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const DELAY_BETWEEN_SOURCES_MS = 2000;
 const MAX_TWEETS_PER_SOURCE = 10;
 
@@ -37,153 +33,110 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// ── Cookie persistence ──────────────────────────────────────────
+// ── Syndication fetcher ─────────────────────────────────────────
 
-async function loadCookies() {
-  try {
-    const { data } = await supabase
-      .from("app_config")
-      .select("value")
-      .eq("key", COOKIE_CONFIG_KEY)
-      .maybeSingle();
-    if (data?.value) {
-      return typeof data.value === "string"
-        ? data.value
-        : JSON.stringify(data.value);
-    }
-  } catch (err) {
-    console.warn("[scraper] Failed to load cookies:", err.message);
-  }
-  return null;
-}
-
-async function saveCookies(cookieStrings) {
-  try {
-    await supabase.from("app_config").upsert(
-      { key: COOKIE_CONFIG_KEY, value: JSON.stringify(cookieStrings) },
-      { onConflict: "key" }
-    );
-    console.log("[scraper] Cookies saved to app_config");
-  } catch (err) {
-    console.warn("[scraper] Failed to save cookies:", err.message);
-  }
-}
-
-// ── Scraper setup ───────────────────────────────────────────────
-
-async function createAuthenticatedScraper() {
-  const scraper = new Scraper({
-    experimental: {
-      xClientTransactionId: true,
-      xpff: true,
+async function fetchSyndicationTimeline(handle) {
+  const url = `${SYNDICATION_BASE}/${handle}`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+      Referer: "https://the-right-wire.com/",
+      Origin: "https://the-right-wire.com",
     },
   });
 
-  // Try restoring cookies from DB
-  const savedCookies = await loadCookies();
-  if (savedCookies) {
-    try {
-      const cookieArray = JSON.parse(savedCookies);
-      const parsed = cookieArray
-        .map((c) => Cookie.parse(c))
-        .filter((c) => c != null);
-
-      if (parsed.length > 0) {
-        await scraper.setCookies(parsed);
-        if (await scraper.isLoggedIn()) {
-          console.log("[scraper] Restored session from cached cookies");
-          return scraper;
-        }
-        console.log("[scraper] Cached cookies expired, re-logging in");
-      }
-    } catch (err) {
-      console.warn("[scraper] Cookie restore failed:", err.message);
-    }
+  if (!response.ok) {
+    throw new Error(`Syndication fetch failed for @${handle}: HTTP ${response.status}`);
   }
 
-  // Fresh login
-  const username = process.env.TWITTER_USERNAME?.trim();
-  const password = process.env.TWITTER_PASSWORD?.trim();
-  const email = process.env.TWITTER_EMAIL?.trim();
+  const html = await response.text();
+  const match = html.match(
+    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
+  );
 
-  if (!username || !password) {
-    throw new Error("TWITTER_USERNAME and TWITTER_PASSWORD env vars required");
+  if (!match || !match[1]) {
+    throw new Error(`No __NEXT_DATA__ found in syndication response for @${handle}`);
   }
 
-  console.log(`[scraper] Logging in as @${username}...`);
-  await scraper.login(username, password, email || undefined);
+  const data = JSON.parse(match[1]);
+  const entries = data?.props?.pageProps?.timeline?.entries ?? [];
 
-  if (!(await scraper.isLoggedIn())) {
-    throw new Error("Login failed — check credentials");
-  }
-
-  console.log("[scraper] Login successful, caching cookies");
-  const cookies = await scraper.getCookies();
-  await saveCookies(cookies.map((c) => c.toString()));
-
-  return scraper;
+  return entries
+    .filter((e) => e.type === "tweet" && e.content?.tweet)
+    .map((e) => e.content.tweet);
 }
 
 // ── Tweet normalization ─────────────────────────────────────────
 
-function normalizeTweet(tweet, avatarUrl) {
-  const id = tweet.id;
-  const text = tweet.text;
+function normalizeTweet(tweet) {
+  const id = tweet.id_str;
+  const text = tweet.full_text;
   if (!id || !text) return null;
-  if (tweet.isRetweet) return null;
+
+  // Skip retweets
+  if (tweet.retweeted_status) return null;
+  if (text.startsWith("RT @")) return null;
 
   const mediaUrls = [];
   let videoUrl = null;
 
-  if (tweet.photos?.length > 0) {
-    for (const photo of tweet.photos) {
-      if (photo.url) mediaUrls.push(photo.url);
+  const mediaList = tweet.extended_entities?.media ?? tweet.entities?.media ?? [];
+
+  for (const media of mediaList) {
+    if (media.type === "photo" && media.media_url_https) {
+      mediaUrls.push(media.media_url_https);
+    } else if (
+      (media.type === "video" || media.type === "animated_gif") &&
+      media.video_info?.variants
+    ) {
+      const mp4Variants = media.video_info.variants
+        .filter((v) => v.content_type === "video/mp4" && v.url)
+        .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
+
+      if (mp4Variants.length > 0) {
+        videoUrl = mp4Variants[0].url;
+      }
+      if (media.media_url_https) {
+        mediaUrls.push(media.media_url_https);
+      }
     }
   }
 
-  if (tweet.videos?.length > 0) {
-    for (const video of tweet.videos) {
-      if (video.url) videoUrl = video.url;
-      if (video.preview) mediaUrls.push(video.preview);
-    }
-  }
-
+  // Clean content: remove trailing t.co links
   const cleanContent = text.replace(/\s*https:\/\/t\.co\/\w+$/g, "").trim();
+
+  let createdAt;
+  try {
+    createdAt = tweet.created_at
+      ? new Date(tweet.created_at).toISOString()
+      : new Date().toISOString();
+  } catch {
+    createdAt = new Date().toISOString();
+  }
+
+  let avatarUrl = null;
+  if (tweet.user?.profile_image_url_https) {
+    avatarUrl = tweet.user.profile_image_url_https.replace("_normal", "_400x400");
+  }
 
   return {
     tweetId: id,
-    authorHandle: tweet.username ?? "",
-    authorName: tweet.name ?? tweet.username ?? "",
+    authorHandle: tweet.user?.screen_name ?? "",
+    authorName: tweet.user?.name ?? tweet.user?.screen_name ?? "",
     authorAvatar: avatarUrl,
     content: cleanContent,
     mediaUrls,
     videoUrl,
-    createdAt: tweet.timeParsed
-      ? tweet.timeParsed.toISOString()
-      : new Date().toISOString(),
+    createdAt,
   };
 }
 
 // ── Main ────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("[scraper] Starting X/Twitter scrape run...");
-  const startTime = Date.now();
-
-  let totalTweetsFetched = 0;
-  let totalNewPosts = 0;
-  let totalUpserted = 0;
-  const errors = [];
-  const sourceStats = [];
-
-  // Authenticate
-  let scraper;
-  try {
-    scraper = await createAuthenticatedScraper();
-  } catch (err) {
-    console.error("[scraper] Auth failed:", err.message);
-    process.exit(1);
-  }
+  console.log("[scraper] Starting X/Twitter scrape via syndication API...");
 
   // Get all active curated sources, filter to X-type
   const { data: sources } = await supabase
@@ -202,59 +155,27 @@ async function main() {
 
   console.log(`[scraper] Fetching from ${xSources.length} X sources...`);
 
-  const avatarCache = new Map();
+  let totalUpserted = 0;
+  const errors = [];
+  const sourceStats = [];
 
   for (const source of xSources) {
     try {
-      // Fetch avatar (cached per run)
-      let avatarUrl = null;
-      if (avatarCache.has(source.x_handle)) {
-        avatarUrl = avatarCache.get(source.x_handle);
-      } else {
-        try {
-          const profile = await scraper.getProfile(source.x_handle);
-          if (profile.avatar) {
-            avatarUrl = profile.avatar.replace("_normal", "_400x400");
-          }
-        } catch (err) {
-          console.warn(
-            `[scraper] Profile fetch failed for @${source.x_handle}: ${err.message}`
-          );
-        }
-        avatarCache.set(source.x_handle, avatarUrl);
-      }
-
-      // Fetch tweets
+      const rawTweets = await fetchSyndicationTimeline(source.x_handle);
       const tweets = [];
-      const iter = scraper.getTweets(source.x_handle, MAX_TWEETS_PER_SOURCE);
-      for await (const tweet of iter) {
-        const normalized = normalizeTweet(tweet, avatarUrl);
+      for (const raw of rawTweets) {
+        const normalized = normalizeTweet(raw);
         if (normalized) tweets.push(normalized);
         if (tweets.length >= MAX_TWEETS_PER_SOURCE) break;
       }
 
-      totalTweetsFetched += tweets.length;
-      const stat = { handle: source.x_handle, tweets: tweets.length };
+      sourceStats.push({
+        handle: source.x_handle,
+        tweets: tweets.length,
+        newest: tweets[0]?.createdAt ?? null,
+      });
 
-      if (tweets.length > 0) {
-        const sorted = [...tweets].sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        stat.newest = sorted[0].createdAt;
-        stat.oldest = sorted[sorted.length - 1].createdAt;
-      }
-
-      sourceStats.push(stat);
-
-      // Upsert tweets into posts table
       for (const tweet of tweets) {
-        const { data: existing } = await supabase
-          .from("posts")
-          .select("id")
-          .eq("x_tweet_id", tweet.tweetId)
-          .maybeSingle();
-
         const { error } = await supabase.from("posts").upsert(
           {
             source: "x",
@@ -274,59 +195,40 @@ async function main() {
 
         if (!error) {
           totalUpserted++;
-          if (!existing) totalNewPosts++;
         } else {
-          console.warn(
-            `[scraper] Upsert error for tweet ${tweet.tweetId}: ${error.message}`
-          );
+          console.warn(`  Upsert error for ${tweet.tweetId}: ${error.message}`);
         }
       }
 
-      console.log(`[scraper] @${source.x_handle}: ${tweets.length} tweets`);
+      console.log(`  @${source.x_handle}: ${tweets.length} tweets`);
     } catch (err) {
       const msg = `Failed @${source.x_handle}: ${err.message}`;
-      console.error(`[scraper] ${msg}`);
+      console.error(`  ${msg}`);
       errors.push(msg);
-      sourceStats.push({ handle: source.x_handle, tweets: 0 });
+      sourceStats.push({ handle: source.x_handle, tweets: 0, newest: null });
     }
 
-    // Rate-limit delay between sources
-    await new Promise((r) => setTimeout(r, DELAY_BETWEEN_SOURCES_MS));
+    // Rate limit: delay between sources
+    await new Promise((resolve) => setTimeout(resolve, DELAY_BETWEEN_SOURCES_MS));
   }
 
-  // ── Summary ──
+  // Summary
+  console.log("\n[scraper] === Summary ===");
+  console.log(`  Sources: ${xSources.length}`);
+  console.log(`  Total upserted: ${totalUpserted}`);
+  console.log(`  Errors: ${errors.length}`);
 
-  const newestTweetDates = sourceStats
-    .filter((s) => s.newest)
-    .map((s) => new Date(s.newest).getTime());
-  const newestTweetTime =
-    newestTweetDates.length > 0 ? Math.max(...newestTweetDates) : null;
-  const staleMinutes = newestTweetTime
-    ? Math.round((Date.now() - newestTweetTime) / 60000)
-    : null;
   const emptySources = sourceStats.filter((s) => s.tweets === 0);
-
-  const summary = {
-    duration: `${Math.round((Date.now() - startTime) / 1000)}s`,
-    tweetsFetched: totalTweetsFetched,
-    newPosts: totalNewPosts,
-    totalUpserted,
-    staleMinutes,
-    newestTweet: newestTweetTime
-      ? new Date(newestTweetTime).toISOString()
-      : null,
-    emptySources:
-      emptySources.length > 0 ? emptySources.map((s) => s.handle) : undefined,
-    errors: errors.length > 0 ? errors : undefined,
-  };
-
-  console.log("\n[scraper] ═══ SUMMARY ═══");
-  console.log(JSON.stringify(summary, null, 2));
-
-  // Exit with error if auth worked but got zero tweets from all sources
-  if (totalTweetsFetched === 0 && errors.length > 0) {
-    process.exit(1);
+  if (emptySources.length > 0) {
+    console.log(`  Empty sources: ${emptySources.map((s) => s.handle).join(", ")}`);
   }
+
+  if (errors.length > 0) {
+    console.log("\n  Errors:");
+    for (const e of errors) console.log(`    - ${e}`);
+  }
+
+  process.exit(errors.length > 0 && totalUpserted === 0 ? 1 : 0);
 }
 
 main().catch((err) => {

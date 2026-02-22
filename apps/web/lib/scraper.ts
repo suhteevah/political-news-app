@@ -1,20 +1,15 @@
 /**
- * Twitter/X scraper — uses @the-convocation/twitter-scraper with auth.
+ * Twitter/X scraper — uses Twitter's syndication API (no auth required).
  *
  * Strategy:
- *   1. Attempt authenticated fetch via Twitter's internal GraphQL API
- *   2. Cookie caching in Supabase app_config to avoid re-login each cron run
- *   3. FxTwitter fallback for individual tweet enrichment
+ *   Fetch the public syndication timeline endpoint which returns recent tweets
+ *   as embedded __NEXT_DATA__ JSON. Works from any IP without authentication.
+ *   Includes retry logic with exponential backoff for 429 rate limits.
  *
- * Required env vars:
- *   - TWITTER_USERNAME
- *   - TWITTER_PASSWORD
- *   - TWITTER_EMAIL (optional, for verification prompts)
+ * Endpoint: https://syndication.twitter.com/srv/timeline-profile/screen-name/{handle}
+ *
+ * No env vars required.
  */
-
-import { Scraper, Tweet, Profile } from "@the-convocation/twitter-scraper";
-import { Cookie } from "tough-cookie";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 // ============================================================
 // Types
@@ -33,168 +28,206 @@ export interface ScrapedTweet {
   createdAt: string;
 }
 
+/** Raw tweet shape from the syndication __NEXT_DATA__ JSON */
+interface SyndicationTweet {
+  id_str?: string;
+  full_text?: string;
+  created_at?: string;
+  retweeted_status?: unknown;
+  user?: {
+    screen_name?: string;
+    name?: string;
+    profile_image_url_https?: string;
+  };
+  entities?: {
+    media?: SyndicationMedia[];
+  };
+  extended_entities?: {
+    media?: SyndicationMedia[];
+  };
+}
+
+interface SyndicationMedia {
+  type?: string;
+  media_url_https?: string;
+  video_info?: {
+    variants?: Array<{
+      content_type?: string;
+      bitrate?: number;
+      url?: string;
+    }>;
+  };
+}
+
 // ============================================================
 // Config
 // ============================================================
 
-const COOKIE_CONFIG_KEY = "twitter_scraper_cookies";
+const SYNDICATION_BASE =
+  "https://syndication.twitter.com/srv/timeline-profile/screen-name";
+
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/** Max retries for 429 rate limits */
+const MAX_RETRIES = 2;
+
+/** Base delay in ms for exponential backoff */
+const BASE_RETRY_DELAY_MS = 5000;
 
 // ============================================================
-// Supabase admin client (for cookie storage)
+// Retry helper
 // ============================================================
 
-function getAdminClient(): SupabaseClient {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ============================================================
-// Cookie persistence via Supabase app_config
-// ============================================================
+/**
+ * Fetch with retry logic for 429 rate limits.
+ * Uses exponential backoff: 5s, 10s, 20s between retries.
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries = MAX_RETRIES
+): Promise<Response> {
+  let lastResponse: Response | null = null;
 
-async function loadCookies(): Promise<string | null> {
-  try {
-    const supabase = getAdminClient();
-    const { data } = await supabase
-      .from("app_config")
-      .select("value")
-      .eq("key", COOKIE_CONFIG_KEY)
-      .maybeSingle();
-    if (data?.value) {
-      return typeof data.value === "string"
-        ? data.value
-        : JSON.stringify(data.value);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, options);
+
+    if (response.status !== 429) {
+      return response;
     }
-  } catch (err) {
-    console.warn("[scraper] Failed to load cookies:", err);
-  }
-  return null;
-}
 
-async function saveCookies(cookieStrings: string[]): Promise<void> {
-  try {
-    const supabase = getAdminClient();
-    await supabase.from("app_config").upsert(
-      {
-        key: COOKIE_CONFIG_KEY,
-        value: JSON.stringify(cookieStrings),
-      },
-      { onConflict: "key" }
-    );
-    console.log("[scraper] Cookies saved to app_config");
-  } catch (err) {
-    console.warn("[scraper] Failed to save cookies:", err);
-  }
-}
+    lastResponse = response;
 
-// ============================================================
-// Scraper singleton (reused within a single cron invocation)
-// ============================================================
+    if (attempt < maxRetries) {
+      // Check for Retry-After header
+      const retryAfter = response.headers.get("retry-after");
+      let delayMs: number;
 
-let _scraper: Scraper | null = null;
-let _scraperReady = false;
-
-async function getScraper(): Promise<Scraper> {
-  if (_scraper && _scraperReady) return _scraper;
-
-  const scraper = new Scraper({
-    experimental: {
-      xClientTransactionId: true,
-      xpff: true,
-    },
-  });
-  _scraper = scraper;
-
-  // Try restoring cookies from DB first
-  const savedCookies = await loadCookies();
-  if (savedCookies) {
-    try {
-      const cookieArray: string[] = JSON.parse(savedCookies);
-      const parsed = cookieArray
-        .map((c) => Cookie.parse(c))
-        .filter((c): c is Cookie => c != null);
-
-      if (parsed.length > 0) {
-        await scraper.setCookies(parsed);
-
-        if (await scraper.isLoggedIn()) {
-          console.log("[scraper] Restored session from cached cookies");
-          _scraperReady = true;
-          return scraper;
-        }
-        console.log("[scraper] Cached cookies expired, re-logging in");
+      if (retryAfter) {
+        // Retry-After can be seconds or a date
+        const seconds = parseInt(retryAfter, 10);
+        delayMs = isNaN(seconds) ? BASE_RETRY_DELAY_MS * Math.pow(2, attempt) : seconds * 1000;
+      } else {
+        delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
       }
-    } catch (err) {
-      console.warn("[scraper] Cookie restore failed:", err);
+
+      console.log(
+        `[scraper] Rate limited (429), retrying in ${delayMs / 1000}s (attempt ${attempt + 1}/${maxRetries})...`
+      );
+      await sleep(delayMs);
     }
   }
 
-  // Fresh login
-  const username = process.env.TWITTER_USERNAME;
-  const password = process.env.TWITTER_PASSWORD;
-  const email = process.env.TWITTER_EMAIL;
+  // All retries exhausted, return last 429 response
+  return lastResponse!;
+}
 
-  if (!username || !password) {
+// ============================================================
+// Syndication fetcher
+// ============================================================
+
+/**
+ * Fetch the syndication timeline page and extract tweets from __NEXT_DATA__.
+ * Returns up to ~20 recent tweets (whatever Twitter embeds in the page).
+ * Always retries on 429 (1 retry with 3s delay for bulk, more for diagnostic).
+ */
+async function fetchSyndicationTimeline(
+  handle: string
+): Promise<SyndicationTweet[]> {
+  const url = `${SYNDICATION_BASE}/${handle}`;
+
+  const response = await fetchWithRetry(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+      // Referer/Origin simulate an embedded Twitter widget on our site.
+      // Without these, syndication.twitter.com returns 429 for datacenter IPs.
+      Referer: "https://the-right-wire.com/",
+      Origin: "https://the-right-wire.com",
+    },
+    // No caching — always get fresh data
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
     throw new Error(
-      "[scraper] TWITTER_USERNAME and TWITTER_PASSWORD env vars required"
+      `Syndication fetch failed for @${handle}: HTTP ${response.status}`
     );
   }
 
-  console.log(`[scraper] Logging in as @${username}...`);
-  await scraper.login(username, password, email);
+  const html = await response.text();
 
-  if (!(await scraper.isLoggedIn())) {
-    throw new Error("[scraper] Login failed — check credentials");
+  // Extract __NEXT_DATA__ JSON from the HTML
+  const match = html.match(
+    /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
+  );
+
+  if (!match || !match[1]) {
+    throw new Error(
+      `No __NEXT_DATA__ found in syndication response for @${handle}`
+    );
   }
 
-  console.log("[scraper] Login successful, caching cookies");
+  const data = JSON.parse(match[1]);
+  const entries: Array<{
+    type?: string;
+    content?: { tweet?: SyndicationTweet };
+  }> = data?.props?.pageProps?.timeline?.entries ?? [];
 
-  // Save cookies for next run
-  const cookies = await scraper.getCookies();
-  const cookieStrings = cookies.map((c) => c.toString());
-  await saveCookies(cookieStrings);
-
-  _scraperReady = true;
-  return scraper;
+  // Filter to tweet entries only (skip cursors, etc.)
+  return entries
+    .filter((e) => e.type === "tweet" && e.content?.tweet)
+    .map((e) => e.content!.tweet!);
 }
 
 // ============================================================
 // Tweet normalization
 // ============================================================
 
-function normalizeTweet(
-  tweet: Tweet,
-  avatarUrl: string | null
+function normalizeSyndicationTweet(
+  tweet: SyndicationTweet
 ): ScrapedTweet | null {
-  const id = tweet.id;
-  const text = tweet.text;
+  const id = tweet.id_str;
+  const text = tweet.full_text;
   if (!id || !text) return null;
 
   // Skip retweets — we want original content only
-  if (tweet.isRetweet) return null;
+  if (tweet.retweeted_status) return null;
+  if (text.startsWith("RT @")) return null;
 
   const mediaUrls: string[] = [];
   let videoUrl: string | null = null;
 
-  // Extract photos
-  if (tweet.photos && tweet.photos.length > 0) {
-    for (const photo of tweet.photos) {
-      if (photo.url) mediaUrls.push(photo.url);
-    }
-  }
+  // Use extended_entities for media (more complete than entities)
+  const mediaList =
+    tweet.extended_entities?.media ?? tweet.entities?.media ?? [];
 
-  // Extract videos
-  if (tweet.videos && tweet.videos.length > 0) {
-    for (const video of tweet.videos) {
-      // The library provides preview/thumbnail as the video URL sometimes
-      // Look for the actual MP4 URL
-      if (video.url) {
-        videoUrl = video.url;
+  for (const media of mediaList) {
+    if (media.type === "photo" && media.media_url_https) {
+      mediaUrls.push(media.media_url_https);
+    } else if (
+      (media.type === "video" || media.type === "animated_gif") &&
+      media.video_info?.variants
+    ) {
+      // Find the best quality MP4
+      const mp4Variants = media.video_info.variants
+        .filter((v) => v.content_type === "video/mp4" && v.url)
+        .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
+
+      if (mp4Variants.length > 0) {
+        videoUrl = mp4Variants[0].url!;
       }
-      if (video.preview) {
-        mediaUrls.push(video.preview);
+
+      // Use the thumbnail as a media URL
+      if (media.media_url_https) {
+        mediaUrls.push(media.media_url_https);
       }
     }
   }
@@ -202,17 +235,34 @@ function normalizeTweet(
   // Clean content: remove trailing t.co links
   const cleanContent = text.replace(/\s*https:\/\/t\.co\/\w+$/g, "").trim();
 
+  // Parse the Twitter date format: "Sun Feb 22 00:38:56 +0000 2026"
+  let createdAt: string;
+  try {
+    createdAt = tweet.created_at
+      ? new Date(tweet.created_at).toISOString()
+      : new Date().toISOString();
+  } catch {
+    createdAt = new Date().toISOString();
+  }
+
+  // Get avatar URL (upgrade to higher resolution)
+  let avatarUrl: string | null = null;
+  if (tweet.user?.profile_image_url_https) {
+    avatarUrl = tweet.user.profile_image_url_https.replace(
+      "_normal",
+      "_400x400"
+    );
+  }
+
   return {
     tweetId: id,
-    authorHandle: tweet.username ?? "",
-    authorName: tweet.name ?? tweet.username ?? "",
+    authorHandle: tweet.user?.screen_name ?? "",
+    authorName: tweet.user?.name ?? tweet.user?.screen_name ?? "",
     authorAvatar: avatarUrl,
     content: cleanContent,
     mediaUrls,
     videoUrl,
-    createdAt: tweet.timeParsed
-      ? tweet.timeParsed.toISOString()
-      : new Date().toISOString(),
+    createdAt,
   };
 }
 
@@ -220,39 +270,16 @@ function normalizeTweet(
 // Main Export — Fetch recent tweets for a handle
 // ============================================================
 
-// Profile avatar cache — avoids re-fetching the same profile within a cron run
-const _avatarCache = new Map<string, string | null>();
-
 export async function fetchRecentTweetsForHandle(
   handle: string,
   maxResults = 10
 ): Promise<ScrapedTweet[]> {
   try {
-    const scraper = await getScraper();
+    const rawTweets = await fetchSyndicationTimeline(handle);
     const results: ScrapedTweet[] = [];
 
-    // Fetch profile avatar (cached per cron run)
-    let avatarUrl: string | null = null;
-    if (_avatarCache.has(handle)) {
-      avatarUrl = _avatarCache.get(handle) ?? null;
-    } else {
-      try {
-        const profile: Profile = await scraper.getProfile(handle);
-        if (profile.avatar) {
-          // Get high-res avatar (remove _normal suffix, use _400x400)
-          avatarUrl = profile.avatar.replace("_normal", "_400x400");
-        }
-      } catch (err) {
-        console.warn(`[scraper] Failed to fetch profile for @${handle}:`, err);
-      }
-      _avatarCache.set(handle, avatarUrl);
-    }
-
-    // getTweets returns an AsyncGenerator
-    const tweetsIter = scraper.getTweets(handle, maxResults);
-
-    for await (const tweet of tweetsIter) {
-      const normalized = normalizeTweet(tweet, avatarUrl);
+    for (const tweet of rawTweets) {
+      const normalized = normalizeSyndicationTweet(tweet);
       if (normalized) {
         results.push(normalized);
       }
@@ -260,9 +287,7 @@ export async function fetchRecentTweetsForHandle(
     }
 
     if (results.length > 0) {
-      console.log(
-        `[scraper] Got ${results.length} tweets for @${handle}`
-      );
+      console.log(`[scraper] Got ${results.length} tweets for @${handle}`);
     } else {
       console.warn(`[scraper] No tweets found for @${handle}`);
     }
@@ -278,48 +303,85 @@ export async function fetchRecentTweetsForHandle(
 }
 
 /**
- * Diagnostic: test scraper login and fetch one handle. Returns detailed status.
+ * Diagnostic: test syndication scraper for a handle. Returns detailed status.
  */
 export async function diagnoseScraper(handle = "Breaking911"): Promise<{
-  loggedIn: boolean;
-  loginMethod: string;
+  method: string;
+  rawEntries: number;
   tweetCount: number;
   firstTweet: string | null;
+  newestDate: string | null;
   avatarUrl: string | null;
+  httpStatus: number | null;
   error: string | null;
 }> {
   const result = {
-    loggedIn: false,
-    loginMethod: "unknown",
+    method: "syndication",
+    rawEntries: 0,
     tweetCount: 0,
     firstTweet: null as string | null,
+    newestDate: null as string | null,
     avatarUrl: null as string | null,
+    httpStatus: null as number | null,
     error: null as string | null,
   };
 
   try {
-    const scraper = await getScraper();
-    result.loggedIn = await scraper.isLoggedIn();
-    result.loginMethod = result.loggedIn ? "authenticated" : "guest";
+    // Test the raw syndication endpoint directly (with retry for diagnostic)
+    const url = `${SYNDICATION_BASE}/${handle}`;
+    const response = await fetchWithRetry(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        Referer: "https://the-right-wire.com/",
+        Origin: "https://the-right-wire.com",
+      },
+      cache: "no-store",
+    });
 
-    // Try fetching profile
-    try {
-      const profile = await scraper.getProfile(handle);
-      result.avatarUrl = profile.avatar ?? null;
-    } catch (err) {
-      result.error = `Profile fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+    result.httpStatus = response.status;
+
+    if (!response.ok) {
+      result.error = `HTTP ${response.status}`;
+      return result;
     }
 
-    // Try fetching tweets
+    const html = await response.text();
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/
+    );
+
+    if (!match || !match[1]) {
+      result.error = `No __NEXT_DATA__ found (html length: ${html.length})`;
+      return result;
+    }
+
+    const data = JSON.parse(match[1]);
+    const entries: Array<{
+      type?: string;
+      content?: { tweet?: SyndicationTweet };
+    }> = data?.props?.pageProps?.timeline?.entries ?? [];
+
+    result.rawEntries = entries.length;
+
+    // Normalize tweets
     const tweets: ScrapedTweet[] = [];
-    const iter = scraper.getTweets(handle, 3);
-    for await (const tweet of iter) {
-      const normalized = normalizeTweet(tweet, result.avatarUrl);
-      if (normalized) tweets.push(normalized);
-      if (tweets.length >= 3) break;
+    for (const entry of entries) {
+      if (entry.type === "tweet" && entry.content?.tweet) {
+        const normalized = normalizeSyndicationTweet(entry.content.tweet);
+        if (normalized) tweets.push(normalized);
+        if (tweets.length >= 5) break;
+      }
     }
+
     result.tweetCount = tweets.length;
-    result.firstTweet = tweets[0]?.content?.substring(0, 100) ?? null;
+    if (tweets.length > 0) {
+      result.firstTweet = tweets[0].content.substring(0, 100);
+      result.newestDate = tweets[0].createdAt;
+      result.avatarUrl = tweets[0].authorAvatar;
+    }
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
   }
@@ -338,12 +400,4 @@ export function toVideoEmbedUrl(tweetUrl: string): string {
   return tweetUrl
     .replace("twitter.com", "vxtwitter.com")
     .replace("x.com", "fixvx.com");
-}
-
-/**
- * Reset the scraper singleton (useful if cookies become invalid mid-run).
- */
-export function resetScraper(): void {
-  _scraper = null;
-  _scraperReady = false;
 }
